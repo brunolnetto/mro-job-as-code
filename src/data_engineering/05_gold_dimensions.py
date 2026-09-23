@@ -88,15 +88,22 @@ FROM {fq(silver_schema, "asset")}
 """)
 
 # COMMAND ----------
-# Date dimension follows the simulation horizon, not wall-clock time.
+# Date dimension follows the observed business-data horizon, not simulator state.
 
 date_bounds = spark.sql(f"""
+WITH horizon AS (
+    SELECT data_horizon_at
+    FROM {fq(bronze_schema, "ingestion_run")}
+    WHERE completed_at IS NOT NULL
+    ORDER BY completed_at DESC
+    LIMIT 1
+)
 SELECT
     COALESCE(
       MIN(CAST(planned_at AS DATE)),
-      CAST((SELECT simulated_at FROM {fq(bronze_schema, "sim_state_raw")} WHERE id='main') AS DATE)
+      CAST((SELECT data_horizon_at FROM horizon) AS DATE)
     ) AS min_date,
-    CAST((SELECT simulated_at FROM {fq(bronze_schema, "sim_state_raw")} WHERE id='main') AS DATE) AS max_date
+    CAST((SELECT data_horizon_at FROM horizon) AS DATE) AS max_date
 FROM {fq(bronze_schema, "work_order_state_raw")}
 """).first()
 

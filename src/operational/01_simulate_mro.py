@@ -14,7 +14,7 @@ The simulator is intentionally job-oriented:
 * all durable state lives in Delta tables in a Unity Catalog schema;
 * every invocation advances a persisted logical simulation clock;
 * mutable entities are versioned by ``valid_from_tick``;
-* user-facing views only expose versions/events at or before ``committed_tick``;
+* operational views only expose versions/events at or before the simulator's private ``committed_tick``;
 * deterministic IDs and per-tick RNG make retries reproducible;
 * ``sim_state`` is advanced only after a micro-batch has been persisted.
 
@@ -203,44 +203,56 @@ PROFILES: dict[str, list[tuple[str, float, float, float]]] = {
 
 ALLOWED_TRANSITIONS: dict[str, dict[str, set[str]]] = {
     "work_order": {
-        "PLANNED": {"RELEASED"},
-        "RELEASED": {"WAITING_MATERIAL", "IN_PROGRESS"},
-        "WAITING_MATERIAL": {"IN_PROGRESS"},
+        "PLANNED": {"RELEASED", "CANCELLED"},
+        "RELEASED": {"WAITING_MATERIAL", "IN_PROGRESS", "CANCELLED"},
+        "WAITING_MATERIAL": {"IN_PROGRESS", "CANCELLED"},
         "IN_PROGRESS": {"COMPLETED"},
         "COMPLETED": {"CLOSED"},
         "CLOSED": set(),
+        "CANCELLED": set(),
     },
     "work_order_material": {
-        "REQUESTED": {"PARTIALLY_ISSUED", "FULFILLED"},
-        "PARTIALLY_ISSUED": {"FULFILLED"},
+        "REQUESTED": {"PARTIALLY_ISSUED", "FULFILLED", "CANCELLED"},
+        "PARTIALLY_ISSUED": {"FULFILLED", "CANCELLED"},
         "FULFILLED": set(),
+        "CANCELLED": set(),
     },
     "purchase_requisition": {
-        "REQUESTED": {"APPROVED"},
-        "APPROVED": {"ORDERED"},
-        "ORDERED": {"CLOSED"},
+        "REQUESTED": {"APPROVED", "REJECTED"},
+        "APPROVED": {"ORDERED", "CANCELLED"},
+        "ORDERED": {"CLOSED", "CANCELLED"},
         "CLOSED": set(),
+        "REJECTED": set(),
+        "CANCELLED": set(),
     },
     "purchase_order": {
-        "APPROVED": {"SENT"},
-        "SENT": {"PARTIALLY_RECEIVED", "RECEIVED"},
-        "PARTIALLY_RECEIVED": {"RECEIVED"},
+        "APPROVED": {"SENT", "CANCELLED"},
+        "SENT": {"PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"},
+        "PARTIALLY_RECEIVED": {"RECEIVED", "CANCELLED"},
         "RECEIVED": {"CLOSED"},
         "CLOSED": set(),
+        "CANCELLED": set(),
     },
     "fiscal_invoice": {
         "RECEIVED": {"VALIDATING"},
-        "VALIDATING": {"BLOCKED", "MATCHED"},
+        "VALIDATING": {"BLOCKED", "POSTED"},
         "BLOCKED": {"RELEASED"},
-        "RELEASED": {"MATCHED"},
-        "MATCHED": {"POSTED"},
+        "RELEASED": set(),
         "POSTED": set(),
     },
     "accounts_payable": {
-        "OPEN": {"SCHEDULED"},
-        "SCHEDULED": {"PAID"},
+        "OPEN": {"SCHEDULED", "VOIDED"},
+        "SCHEDULED": {"PAID", "VOIDED"},
         "PAID": set(),
+        "VOIDED": set(),
     },
+}
+
+EXCEPTION_RATES = {
+    "work_order_cancel_before_release": 0.02,
+    "requisition_reject_at_approval": 0.03,
+    "purchase_order_cancel_before_first_receipt": 0.02,
+    "accounts_payable_void": 0.01,
 }
 
 STATE_TABLE_FOR_ENTITY = {
@@ -583,7 +595,19 @@ class DeltaStore:
                 for field in spark_schema.fields
             )
             self.spark.sql(
-                f"CREATE TABLE IF NOT EXISTS {self.fq(name)} (\n  {ddl}\n) USING DELTA"
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.fq(name)} (
+                  {ddl}
+                )
+                USING DELTA
+                TBLPROPERTIES (delta.enableChangeDataFeed = true)
+                """
+            )
+            self.spark.sql(
+                f"""
+                ALTER TABLE {self.fq(name)}
+                SET TBLPROPERTIES (delta.enableChangeDataFeed = true)
+                """
             )
         self.create_views()
 
@@ -1233,12 +1257,42 @@ class SimulationEngine:
                 },
             )
 
-    def release_work_orders(self, now: datetime, tick: int) -> None:
+    def release_work_orders(
+        self,
+        now: datetime,
+        tick: int,
+        rng: random.Random,
+    ) -> None:
         for wo in list(self.work_orders.values()):
             if wo["status"] != "PLANNED" or wo["release_after"] > now:
                 continue
             if wo["maintenance_type"] != "CORRECTIVE" and not self.is_business_time(now):
                 continue
+
+            if rng.random() < EXCEPTION_RATES["work_order_cancel_before_release"]:
+                self.transition(
+                    "work_order",
+                    wo,
+                    "CANCELLED",
+                    now,
+                    tick,
+                    reason="maintenance scope withdrawn before release",
+                )
+                for wom in self.work_order_materials.values():
+                    if (
+                        wom["work_order_id"] == wo["id"]
+                        and wom["status"] in {"REQUESTED", "PARTIALLY_ISSUED"}
+                    ):
+                        self.transition(
+                            "work_order_material",
+                            wom,
+                            "CANCELLED",
+                            now,
+                            tick,
+                            reason="parent work order cancelled",
+                        )
+                continue
+
             self.transition(
                 "work_order",
                 wo,
@@ -1488,20 +1542,38 @@ class SimulationEngine:
                 priority="NORMAL",
             )
 
-    def approve_requisitions(self, now: datetime, tick: int) -> None:
+    def approve_requisitions(
+        self,
+        now: datetime,
+        tick: int,
+        rng: random.Random,
+    ) -> None:
         if not self.is_business_time(now):
             return
         for pr in list(self.purchase_requisitions.values()):
-            if pr["status"] == "REQUESTED" and pr["approve_after"] <= now:
+            if pr["status"] != "REQUESTED" or pr["approve_after"] > now:
+                continue
+
+            if rng.random() < EXCEPTION_RATES["requisition_reject_at_approval"]:
                 self.transition(
                     "purchase_requisition",
                     pr,
-                    "APPROVED",
+                    "REJECTED",
                     now,
                     tick,
-                    reason="approval SLA reached",
-                    extra={"approved_at": now},
+                    reason="purchase request rejected during approval",
                 )
+                continue
+
+            self.transition(
+                "purchase_requisition",
+                pr,
+                "APPROVED",
+                now,
+                tick,
+                reason="approval SLA reached",
+                extra={"approved_at": now},
+            )
 
     def create_purchase_orders(self, now: datetime, tick: int, rng: random.Random) -> None:
         if not self.is_business_time(now):
@@ -1598,6 +1670,33 @@ class SimulationEngine:
         for po in list(self.purchase_orders.values()):
             if po["status"] not in {"SENT", "PARTIALLY_RECEIVED"} or po["next_receipt_at"] > now:
                 continue
+
+            if (
+                po["status"] == "SENT"
+                and po["receipt_count"] == 0
+                and rng.random()
+                < EXCEPTION_RATES["purchase_order_cancel_before_first_receipt"]
+            ):
+                self.transition(
+                    "purchase_order",
+                    po,
+                    "CANCELLED",
+                    now,
+                    tick,
+                    reason="supplier cancelled before first delivery",
+                )
+                pr = self.purchase_requisitions[po["requisition_id"]]
+                if pr["status"] == "ORDERED":
+                    self.transition(
+                        "purchase_requisition",
+                        pr,
+                        "CANCELLED",
+                        now,
+                        tick,
+                        reason="downstream purchase order cancelled",
+                    )
+                continue
+
             open_items = [
                 item for item in self.purchase_order_items.values()
                 if item["purchase_order_id"] == po["id"]
@@ -1868,10 +1967,10 @@ class SimulationEngine:
                     self.transition(
                         "fiscal_invoice",
                         invoice,
-                        "MATCHED",
+                        "POSTED",
                         now,
                         tick,
-                        reason="PO, receipt and invoice matched within tolerance",
+                        reason="fiscal validation completed without exception",
                     )
 
         for invoice in list(self.invoices.values()):
@@ -1885,24 +1984,16 @@ class SimulationEngine:
                     reason="fiscal discrepancy resolved",
                 )
 
-        for invoice in list(self.invoices.values()):
-            if invoice["status"] == "RELEASED":
-                self.transition(
-                    "fiscal_invoice",
-                    invoice,
-                    "MATCHED",
-                    now,
-                    tick,
-                    reason="released invoice revalidated",
-                )
-
     def finance_lifecycle(self, now: datetime, tick: int) -> None:
         if not self.is_business_time(now):
             return
 
         invoices_with_ap = {ap["invoice_id"] for ap in self.accounts_payable.values()}
         for invoice in list(self.invoices.values()):
-            if invoice["status"] != "MATCHED" or invoice["id"] in invoices_with_ap:
+            if (
+                invoice["status"] not in {"POSTED", "RELEASED"}
+                or invoice["id"] in invoices_with_ap
+            ):
                 continue
             supplier = self.suppliers[invoice["supplier_id"]]
             due_at = self.next_business_time(now + timedelta(days=supplier["payment_term_days"]))
@@ -1921,22 +2012,35 @@ class SimulationEngine:
             }
             self.accounts_payable[ap_id] = ap
             self.record_initial_state("accounts_payable", ap, now, tick)
-            self.transition(
-                "fiscal_invoice",
-                invoice,
-                "POSTED",
-                now,
-                tick,
-                reason="invoice posted to accounts payable",
-            )
             self.event(
                 now,
                 tick,
                 "ACCOUNTS_PAYABLE_CREATED",
                 "accounts_payable",
                 ap_id,
-                {"invoice_id": invoice["id"], "amount_cents": ap["amount_cents"]},
+                {
+                    "invoice_id": invoice["id"],
+                    "amount_cents": ap["amount_cents"],
+                    "fiscal_outcome": invoice["status"],
+                },
             )
+
+        for ap in list(self.accounts_payable.values()):
+            if ap["status"] != "OPEN" or ap["posted_at"] >= now:
+                continue
+            cohort = int(
+                stable_id("accounts_payable_void", self.config.seed, ap["id"])[:8],
+                16,
+            ) / 0xFFFFFFFF
+            if cohort < EXCEPTION_RATES["accounts_payable_void"]:
+                self.transition(
+                    "accounts_payable",
+                    ap,
+                    "VOIDED",
+                    now,
+                    tick,
+                    reason="payable title reversed before payment",
+                )
 
         schedule_horizon = now + timedelta(days=3)
         for ap in list(self.accounts_payable.values()):
@@ -1995,7 +2099,9 @@ class SimulationEngine:
             if po["status"] != "RECEIVED":
                 continue
             invoices = [inv for inv in self.invoices.values() if inv["purchase_order_id"] == po["id"]]
-            if invoices and all(inv["status"] == "POSTED" for inv in invoices):
+            if invoices and all(
+                inv["status"] in {"POSTED", "RELEASED"} for inv in invoices
+            ):
                 self.transition(
                     "purchase_order",
                     po,
@@ -2076,10 +2182,10 @@ class SimulationEngine:
         rng = random.Random(self.config.seed + tick * 1_000_003)
 
         self.create_work_orders(now, tick, rng)
-        self.release_work_orders(now, tick)
+        self.release_work_orders(now, tick, rng)
         self.issue_pending_materials(now, tick, rng)
         self.reorder_stock(now, tick, rng)
-        self.approve_requisitions(now, tick)
+        self.approve_requisitions(now, tick, rng)
         self.create_purchase_orders(now, tick, rng)
         self.send_purchase_orders(now, tick)
         self.receive_purchase_orders(now, tick, rng)

@@ -52,8 +52,7 @@ SELECT
     i.movement_value,
     i.reference_type,
     i.reference_id,
-    i.occurred_at,
-    i.simulation_tick
+    i.occurred_at
 FROM {fq(silver_schema, "inventory_movement")} i
 JOIN {fq(gold_schema, "dim_material")} dm
   ON dm.material_id = i.material_id
@@ -68,15 +67,24 @@ SELECT
     dm.material_key,
     dw.warehouse_key,
     CAST(
-      (SELECT committed_tick FROM {fq(bronze_schema, "sim_state_raw")} WHERE id='main')
-      AS BIGINT
-    ) AS snapshot_tick,
-    CAST(
       date_format(
-        CAST((SELECT simulated_at FROM {fq(bronze_schema, "sim_state_raw")} WHERE id='main') AS DATE),
+        CAST((
+          SELECT data_horizon_at
+          FROM {fq(bronze_schema, "ingestion_run")}
+          WHERE completed_at IS NOT NULL
+          ORDER BY completed_at DESC
+          LIMIT 1
+        ) AS DATE),
         'yyyyMMdd'
       ) AS INT
     ) AS snapshot_date_key,
+    (
+      SELECT data_horizon_at
+      FROM {fq(bronze_schema, "ingestion_run")}
+      WHERE completed_at IS NOT NULL
+      ORDER BY completed_at DESC
+      LIMIT 1
+    ) AS snapshot_at,
     s.on_hand,
     s.reserved,
     s.available,

@@ -78,8 +78,7 @@ SELECT
     fii.icms_amount,
     fii.ipi_amount,
     fii.pis_amount,
-    fii.cofins_amount,
-    fii.simulation_tick
+    fii.cofins_amount
 FROM {fq(silver_schema, "fiscal_invoice_item")} fii
 JOIN {fq(silver_schema, "fiscal_invoice")} fi
   ON fi.fiscal_invoice_id = fii.fiscal_invoice_id
@@ -108,6 +107,7 @@ SELECT
     ap.scheduled_at,
     ap.payment_scheduled_for,
     ap.paid_at,
+    ap.voided_at,
     ap.days_to_pay,
     ap.is_overdue,
     ap.days_past_due
@@ -126,8 +126,7 @@ SELECT
     ap.supplier_key,
     CAST(date_format(CAST(p.paid_at AS DATE), 'yyyyMMdd') AS INT) AS payment_date_key,
     p.amount,
-    p.paid_at,
-    p.simulation_tick
+    p.paid_at
 FROM {fq(silver_schema, "payment")} p
 JOIN {fq(gold_schema, "fact_accounts_payable")} ap
   ON ap.accounts_payable_id = p.accounts_payable_id

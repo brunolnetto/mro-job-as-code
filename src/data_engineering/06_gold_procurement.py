@@ -61,6 +61,7 @@ SELECT
     poi.fill_ratio,
     po.promised_at,
     po.received_at,
+    po.cancelled_at,
     po.delivery_variance_hours,
     po.received_on_time,
     (poi.received_qty > 0 AND poi.received_qty < poi.ordered_qty) AS is_partial,
@@ -91,8 +92,7 @@ SELECT
     gri.qty_received,
     poi.unit_price,
     CAST(gri.qty_received * poi.unit_price AS DECIMAL(18,2)) AS receipt_value,
-    gr.received_at,
-    gri.simulation_tick
+    gr.received_at
 FROM {fq(silver_schema, "goods_receipt_item")} gri
 JOIN {fq(silver_schema, "goods_receipt")} gr
   ON gr.goods_receipt_id = gri.goods_receipt_id

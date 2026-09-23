@@ -55,6 +55,9 @@ SELECT
     CASE WHEN wo.closed_at IS NOT NULL
          THEN CAST(date_format(CAST(wo.closed_at AS DATE), 'yyyyMMdd') AS INT) END
          AS closed_date_key,
+    CASE WHEN wo.cancelled_at IS NOT NULL
+         THEN CAST(date_format(CAST(wo.cancelled_at AS DATE), 'yyyyMMdd') AS INT) END
+         AS cancelled_date_key,
     wo.maintenance_type,
     wo.priority,
     wo.status,
@@ -63,6 +66,7 @@ SELECT
     wo.started_at,
     wo.completed_at,
     wo.closed_at,
+    wo.cancelled_at,
     wo.planning_hours,
     wo.material_wait_hours,
     wo.execution_hours,
@@ -90,6 +94,13 @@ SELECT
     wom.work_order_material_id,
     wom.work_order_id,
     dm.material_key,
+    da.asset_key,
+    dcc.cost_center_key,
+    dw.warehouse_key,
+    CAST(date_format(CAST(wo.planned_at AS DATE), 'yyyyMMdd') AS INT) AS planned_date_key,
+    wo.maintenance_type,
+    wo.priority,
+    wo.status AS work_order_status,
     wom.qty_required,
     wom.qty_issued,
     wom.open_qty,
@@ -97,8 +108,16 @@ SELECT
     wom.estimated_issued_cost,
     wom.status
 FROM {fq(silver_schema, "work_order_material")} wom
+JOIN {fq(silver_schema, "work_order")} wo
+  ON wo.work_order_id = wom.work_order_id
 JOIN {fq(gold_schema, "dim_material")} dm
   ON dm.material_id = wom.material_id
+JOIN {fq(gold_schema, "dim_asset")} da
+  ON da.asset_id = wo.asset_id
+JOIN {fq(gold_schema, "dim_cost_center")} dcc
+  ON dcc.cost_center_id = wo.cost_center_id
+JOIN {fq(gold_schema, "dim_warehouse")} dw
+  ON dw.warehouse_id = wo.warehouse_id
 """)
 
 print("Gold MRO facts built")
