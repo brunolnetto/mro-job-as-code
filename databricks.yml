@@ -1,0 +1,33 @@
+bundle:
+  name: mro-data-pipeline
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog
+    default: mro-data
+
+  source_schema:
+    default: mro_sim
+
+  bronze_schema:
+    default: bronze
+
+  silver_schema:
+    default: silver
+
+  gold_schema:
+    default: gold
+
+  semantic_schema:
+    default: semantic
+
+targets:
+  dev:
+    mode: development
+    default: true
+
+  prod:
+    mode: production
