@@ -1,0 +1,51 @@
+resources:
+  jobs:
+    mro_source_simulator:
+      name: mro-source-simulator
+
+      description: >
+        Independent synthetic MRO operational source-system simulator.
+        It advances durable operational state in the mro_sim schema without
+        depending on or triggering the analytical pipeline.
+
+      max_concurrent_runs: 1
+
+      queue:
+        enabled: true
+
+      schedule:
+        quartz_cron_expression: "0 0/10 * * * ?"
+        timezone_id: "America/Sao_Paulo"
+        pause_status: "PAUSED"
+
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.source_schema}
+
+        - name: start
+          default: "2026-01-01T08:00:00-03:00"
+        - name: step_minutes
+          default: "60"
+        - name: ticks_per_run
+          default: "1"
+        - name: commit_every_ticks
+          default: "1"
+        - name: seed
+          default: "42"
+        - name: work_orders_per_day
+          default: "8"
+        - name: cycle_counts_per_day
+          default: "3"
+        - name: business_timezone
+          default: "America/Sao_Paulo"
+        - name: bootstrap_only
+          default: "false"
+        - name: reset
+          default: "false"
+
+      tasks:
+        - task_key: simulate_mro
+          notebook_task:
+            notebook_path: ../src/operational/01_simulate_mro.py

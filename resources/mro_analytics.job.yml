@@ -1,12 +1,12 @@
 resources:
   jobs:
-    mro_data_pipeline:
-      name: mro-data-pipeline
+    mro_analytics_pipeline:
+      name: mro-analytics-pipeline
 
       description: >
-        Synthetic MRO operational simulation followed by Bronze ingestion,
-        Silver normalization/enrichment, Gold dimensional modeling,
-        Unity Catalog semantic metric views, and a final quality gate.
+        Independent analytical pipeline consuming the latest committed MRO
+        operational state through Bronze, Silver, Gold, semantic metric views,
+        and the final analytical quality gate.
 
       max_concurrent_runs: 1
 
@@ -14,7 +14,7 @@ resources:
         enabled: true
 
       schedule:
-        quartz_cron_expression: "0 0 * * * ?"
+        quartz_cron_expression: "0 0/30 * * * ?"
         timezone_id: "America/Sao_Paulo"
         pause_status: "PAUSED"
 
@@ -31,104 +31,79 @@ resources:
           default: ${var.gold_schema}
         - name: semantic_schema
           default: ${var.semantic_schema}
-
-        # Simulator-specific parameters.
-        # Notebook tasks receive job parameters automatically as widgets.
-        - name: start
-          default: "2026-01-01T08:00:00-03:00"
-        - name: step_minutes
-          default: "60"
-        - name: ticks_per_run
-          default: "1"
-        - name: commit_every_ticks
-          default: "1"
-        - name: seed
-          default: "42"
-        - name: work_orders_per_day
-          default: "8"
-        - name: cycle_counts_per_day
+        - name: source_stability_lag_minutes
+          default: "5"
+        - name: reconciliation_failure_threshold
           default: "3"
-        - name: business_timezone
-          default: "America/Sao_Paulo"
-        - name: bootstrap_only
-          default: "false"
-        - name: reset
-          default: "false"
 
       tasks:
-        - task_key: simulate_mro
-          notebook_task:
-            notebook_path: ../src/01_simulate_mro.py
-
         - task_key: bronze_ingest
-          depends_on:
-            - task_key: simulate_mro
           notebook_task:
-            notebook_path: ../src/02_bronze_ingest.py
+            notebook_path: ../src/data_engineering/02_bronze_ingest.py
 
         - task_key: silver_master
           depends_on:
             - task_key: bronze_ingest
           notebook_task:
-            notebook_path: ../src/03_silver_master.py
+            notebook_path: ../src/data_engineering/03_silver_master.py
 
         - task_key: silver_mro
           depends_on:
             - task_key: silver_master
           notebook_task:
-            notebook_path: ../src/04_silver_mro.py
+            notebook_path: ../src/data_engineering/04_silver_mro.py
 
         - task_key: silver_stock
           depends_on:
             - task_key: silver_master
           notebook_task:
-            notebook_path: ../src/04_silver_stock.py
+            notebook_path: ../src/data_engineering/04_silver_stock.py
 
         - task_key: silver_procurement
           depends_on:
             - task_key: silver_master
           notebook_task:
-            notebook_path: ../src/04_silver_procurement.py
+            notebook_path: ../src/data_engineering/04_silver_procurement.py
 
         - task_key: silver_finance
           depends_on:
             - task_key: silver_master
           notebook_task:
-            notebook_path: ../src/04_silver_finance.py
+            notebook_path: ../src/data_engineering/04_silver_finance.py
 
         - task_key: gold_dimensions
           depends_on:
             - task_key: silver_master
           notebook_task:
-            notebook_path: ../src/05_gold_dimensions.py
+            notebook_path: ../src/data_engineering/05_gold_dimensions.py
 
         - task_key: gold_mro
           depends_on:
             - task_key: gold_dimensions
             - task_key: silver_mro
           notebook_task:
-            notebook_path: ../src/06_gold_mro.py
+            notebook_path: ../src/data_engineering/06_gold_mro.py
 
         - task_key: gold_stock
           depends_on:
             - task_key: gold_dimensions
             - task_key: silver_stock
           notebook_task:
-            notebook_path: ../src/06_gold_stock.py
+            notebook_path: ../src/data_engineering/06_gold_stock.py
 
         - task_key: gold_procurement
           depends_on:
             - task_key: gold_dimensions
             - task_key: silver_procurement
           notebook_task:
-            notebook_path: ../src/06_gold_procurement.py
+            notebook_path: ../src/data_engineering/06_gold_procurement.py
 
         - task_key: gold_finance
           depends_on:
             - task_key: gold_dimensions
             - task_key: silver_finance
           notebook_task:
-            notebook_path: ../src/06_gold_finance.py
+            notebook_path: ../src/data_engineering/06_gold_finance.py
 
         - task_key: semantic_model
           depends_on:
@@ -137,10 +112,10 @@ resources:
             - task_key: gold_procurement
             - task_key: gold_finance
           notebook_task:
-            notebook_path: ../src/07_semantic_model.py
+            notebook_path: ../src/analytics/07_semantic_model.py
 
         - task_key: quality_gate
           depends_on:
             - task_key: semantic_model
           notebook_task:
-            notebook_path: ../src/08_quality_gate.py
+            notebook_path: ../src/data_engineering/08_quality_gate.py
