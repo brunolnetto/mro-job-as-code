@@ -62,16 +62,57 @@ discover_dev(){
 }
 # STAGING and PROD are persistent runtimes. Active means UNPAUSED schedules.
 discover_runtime(){
-  local env="$1" b g; b="$(slot_schedule_status "$env" blue)"; g="$(slot_schedule_status "$env" green)"
-  if [[ "$b" == UNPAUSED && "$g" == UNPAUSED ]]; then echo "Both $env slots active" >&2; return 1; fi
-  if [[ "$b" == UNPAUSED ]]; then echo 'ACTIVE_SLOT=blue'; echo 'CANDIDATE_SLOT=green'
-  elif [[ "$g" == UNPAUSED ]]; then echo 'ACTIVE_SLOT=green'; echo 'CANDIDATE_SLOT=blue'
-  elif [[ "$b" == MISSING && "$g" == MISSING ]]; then echo 'ACTIVE_SLOT=none'; echo 'CANDIDATE_SLOT=blue'
-  elif [[ "$b" == PAUSED && "$g" == MISSING ]]; then echo 'ACTIVE_SLOT=none'; echo 'CANDIDATE_SLOT=blue'
-  elif [[ "$g" == PAUSED && "$b" == MISSING ]]; then echo 'ACTIVE_SLOT=none'; echo 'CANDIDATE_SLOT=green'
-  else echo "Ambiguous $env blue/green state: blue=$b green=$g" >&2; return 1; fi
+  local env="$1" b g bm gm
+  b="$(slot_schedule_status "$env" blue)"
+  g="$(slot_schedule_status "$env" green)"
+
+  if [[ "$b" == UNPAUSED && "$g" == UNPAUSED ]]; then
+    echo "Both $env slots active" >&2
+    return 1
+  fi
+
+  if [[ "$b" == UNPAUSED ]]; then
+    echo 'ACTIVE_SLOT=blue'
+    echo 'CANDIDATE_SLOT=green'
+  elif [[ "$g" == UNPAUSED ]]; then
+    echo 'ACTIVE_SLOT=green'
+    echo 'CANDIDATE_SLOT=blue'
+  elif [[ "$b" == MISSING && "$g" == MISSING ]]; then
+    echo 'ACTIVE_SLOT=none'
+    echo 'CANDIDATE_SLOT=blue'
+  elif [[ "$b" == PAUSED && "$g" == MISSING ]]; then
+    echo 'ACTIVE_SLOT=none'
+    echo 'CANDIDATE_SLOT=blue'
+  elif [[ "$g" == PAUSED && "$b" == MISSING ]]; then
+    echo 'ACTIVE_SLOT=none'
+    echo 'CANDIDATE_SLOT=green'
+  elif [[ "$b" == PAUSED && "$g" == PAUSED ]]; then
+    bm="$(slot_marker_status "$env" blue)"
+    gm="$(slot_marker_status "$env" green)"
+
+    if [[ "$bm" == ACTIVE && "$gm" == ACTIVE ]]; then
+      echo "Both $env slots carry deployment_active=true while both schedules are paused" >&2
+      return 1
+    elif [[ "$bm" == ACTIVE ]]; then
+      echo 'ACTIVE_SLOT=blue'
+      echo 'CANDIDATE_SLOT=green'
+    elif [[ "$gm" == ACTIVE ]]; then
+      echo 'ACTIVE_SLOT=green'
+      echo 'CANDIDATE_SLOT=blue'
+    elif [[ "$bm" == INACTIVE || "$bm" == MISSING ]] && [[ "$gm" == INACTIVE || "$gm" == MISSING ]]; then
+      # Initial/recovery state: neither slot is running and neither is marked active.
+      echo 'ACTIVE_SLOT=none'
+      echo 'CANDIDATE_SLOT=blue'
+    else
+      echo "Ambiguous $env markers while both schedules are paused: blue=$bm green=$gm" >&2
+      return 1
+    fi
+  else
+    echo "Ambiguous $env blue/green state: blue=$b green=$g" >&2
+    return 1
+  fi
 }
-discover(){ case "$1" in dev) discover_dev;; staging|prod) discover_runtime "$1";; *) return 2;; esac; }
+discover(){ case "$1" in dev) discover_dev;; staging|prod) discover_runtime "$1";; *) echo "Unknown environment: $1" >&2; return 2;; esac; }
 
 promote_dev(){
   local active="$1" candidate="$2"
