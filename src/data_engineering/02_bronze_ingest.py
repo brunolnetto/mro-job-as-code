@@ -257,8 +257,8 @@ for source_table in SOURCE_TABLES:
             df = df.withColumn("__rn", F.row_number().over(w)).where("__rn = 1").drop("__rn")
         df = publicize(df, source_table, snapshot_version=end_version, snapshot_timestamp=end_timestamp)
         if source_table in MASTER_TABLES:
-            df = latest_per_key(df, MASTER_TABLES[source_table])
-            keys = MASTER_TABLES[source_table]
+            # Preserve every distinct master-data version for downstream SCD2.
+            keys = ["_source_record_hash"]
         elif source_table in STATE_TABLES:
             keys = ["_source_record_hash"]
         else:
@@ -280,8 +280,8 @@ for source_table in SOURCE_TABLES:
     df = publicize(df, source_table)
 
     if source_table in MASTER_TABLES:
-        df = latest_per_key(df, MASTER_TABLES[source_table])
-        keys = MASTER_TABLES[source_table]
+        # Master/reference CDC is append-preserved by record identity.
+        keys = ["_source_record_hash"]
     elif source_table in STATE_TABLES:
         keys = ["_source_record_hash"]
     else:

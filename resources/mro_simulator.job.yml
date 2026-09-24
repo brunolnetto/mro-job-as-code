@@ -1,12 +1,17 @@
 resources:
   jobs:
     mro_source_simulator:
-      name: mro-source-simulator
+      name: mro-source-simulator-${var.deployment_environment}-${var.deployment_slot}
 
       description: >
         Independent synthetic MRO operational source-system simulator.
-        It advances durable operational state in the mro_sim schema without
-        depending on or triggering the analytical pipeline.
+        It advances durable operational state in the configured source schema
+        without depending on or triggering the analytical pipeline.
+
+      tags:
+        deployment_environment: ${var.deployment_environment}
+        deployment_slot: ${var.deployment_slot}
+        deployment_strategy: blue-green
 
       max_concurrent_runs: 1
 

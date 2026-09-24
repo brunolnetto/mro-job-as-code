@@ -1,0 +1,11 @@
+resources:
+  genie_spaces:
+    mro_analytics_genie:
+      title: MRO Analytics - ${var.deployment_environment}
+      description: Governed natural-language access to the ten MRO semantic metric views.
+      warehouse_id: ${var.warehouse_id}
+      serialized_space: |
+        {"version":2,"config":{"sample_questions":[{"id":"11111111111111111111111111111111","question":["How many work orders were completed?"]},{"id":"22222222222222222222222222222222","question":["Which suppliers have the lowest purchase-order fill rate?"]},{"id":"33333333333333333333333333333333","question":["What is the current inventory value by warehouse?"]},{"id":"44444444444444444444444444444444","question":["How much accounts payable is overdue?"]}]},"data_sources":{"tables":[{"identifier":"${var.catalog}.${var.semantic_schema}.maintenance_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.maintenance_material_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.inventory_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.inventory_position_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.procurement_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.receiving_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.invoice_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.fiscal_item_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.payables_metrics"},{"identifier":"${var.catalog}.${var.semantic_schema}.payment_metrics"}]},"instructions":{"text_instructions":[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","content":["Use only governed metric views. Prefer defined measures over ad-hoc recomputation. Do not infer causality from descriptive operational data."]}]}}
+      permissions:
+        - level: CAN_RUN
+          group_name: users

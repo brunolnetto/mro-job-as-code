@@ -1,0 +1,18 @@
+version: 1
+policy: additive_only
+sources:
+  supplier:
+    required: [id, name, lead_time_days, payment_term_days, delivery_reliability, price_variability, active]
+  material:
+    required: [id, description, category, uom, criticality, unit_cost_cents, reorder_point, reorder_qty, preferred_supplier_id, active]
+  asset:
+    required: [id, description, asset_type, criticality, cost_center_id, warehouse_id, active]
+  entity_state_transition_store:
+    required: [id, entity_type, entity_id, from_state, to_state, reason, occurred_at]
+analytical:
+  dim_supplier:
+    required: [supplier_key, supplier_id, effective_from, effective_to, is_current]
+  dim_material:
+    required: [material_key, material_id, effective_from, effective_to, is_current]
+  dim_asset:
+    required: [asset_key, asset_id, effective_from, effective_to, is_current]

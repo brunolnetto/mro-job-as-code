@@ -2,13 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches:
-      - dev
-      - main
+    branches: [dev, staging, main]
   push:
-    branches:
-      - dev
-      - main
+    branches: [dev, staging, main]
 
 permissions:
   contents: read
@@ -19,7 +15,7 @@ concurrency:
 
 jobs:
   static-validation:
-    name: Static and architectural validation
+    name: Python, architecture, and bundle validation
     runs-on: ubuntu-latest
 
     steps:
@@ -36,12 +32,28 @@ jobs:
       - name: Install CI dependencies
         run: python -m pip install -r requirements-ci.txt
 
-      - name: Compile notebook sources
+      - name: Compile Python/notebook sources
         run: python -m compileall -q src tests
 
       - name: Validate CD helper syntax
         run: bash -n scripts/cd/blue_green.sh
 
-      - name: Run architectural tests
+      - name: Run architectural and schema-evolution tests
         run: pytest -q tests/architecture
 
+      - name: Install Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Validate all bundle targets structurally
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(
+            --var="workspace_host=https://example.invalid"
+            --var="warehouse_id=0000000000000000"
+            --var="run_as_service_principal=00000000-0000-0000-0000-000000000000"
+          )
+          for target in dev_blue dev_green staging_blue staging_green prod_blue prod_green; do
+            echo "Validating $target"
+            databricks bundle validate -t "$target" "${common[@]}"
+          done

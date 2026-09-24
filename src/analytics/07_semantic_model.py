@@ -12,9 +12,6 @@ def _widget(name: str, default: str) -> str:
         return dbutils.widgets.get(name)
 
 catalog = _widget("catalog", "mro-data")
-source_schema = _widget("source_schema", "mro_sim")
-bronze_schema = _widget("bronze_schema", "bronze")
-silver_schema = _widget("silver_schema", "silver")
 gold_schema = _widget("gold_schema", "gold")
 semantic_schema = _widget("semantic_schema", "semantic")
 

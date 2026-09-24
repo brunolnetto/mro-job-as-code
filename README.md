@@ -2,9 +2,9 @@
 
 A synthetic **Maintenance, Repair and Operations (MRO)** data platform built to exercise realistic data-engineering patterns on Databricks.
 
-The project does more than generate random rows. It simulates an operational MRO environment with causally related maintenance, inventory, purchasing, receiving, fiscal, and accounts-payable workflows, persists that operational state in Delta Lake, and then processes it through a Bronze → Silver → Gold → Semantic architecture orchestrated as a Databricks Job.
+The project does more than generate random rows. It simulates an operational MRO environment with causally related maintenance, inventory, purchasing, receiving, fiscal, and accounts-payable workflows, persists that operational state in Delta Lake, and exposes it to an independently scheduled Bronze → Silver → Gold → Semantic analytical pipeline.
 
-The repository is also a **Job-as-Code** example: the notebooks, task dependencies, runtime parameters, schedule, and deployment targets live together and can be validated, deployed, and executed with Databricks Declarative Automation Bundles.
+The repository is also a **Job-as-Code** example: the operational simulator and analytical pipeline are deployed as two independent Databricks Jobs from the same Declarative Automation Bundle. Their integration contract is persisted Delta state plus the Bronze checkpoint—not an orchestration dependency.
 
 ---
 
@@ -40,44 +40,47 @@ These domains are intentionally connected.
 
 A typical simulated business flow is:
 
-```text
-Maintenance demand
-      │
-      ▼
-Work order
-      │
-      ▼
-Material requirement
-      │
-      ├── stock available ──────► inventory issue ──────► maintenance execution
-      │
-      └── stock unavailable
-               │
-               ▼
-      Purchase requisition
-               │
-               ▼
-        Purchase order
-               │
-               ▼
-        Goods receipt
-          │          │
-          ▼          ▼
-      Inventory   Fiscal invoice
-                     │
-                     ▼
-                Validation / match
-                     │
-              ┌──────┴──────┐
-              ▼             ▼
-           matched        blocked
-              │             │
-              └──────┬──────┘
-                     ▼
-              Accounts payable
-                     │
-                     ▼
-                  Payment
+```mermaid
+flowchart LR
+
+    subgraph MRO["1 - Maintenance and Inventory"]
+        direction TB
+        MD["Maintenance demand"] --> WO["Work order"]
+        WO --> MR["Material requirement"]
+
+        MR -->|available| ISSUE["Inventory issue"]
+        ISSUE --> EXEC["Maintenance execution"]
+
+        MR -->|shortage| SHORTAGE["Material shortage"]
+        WO -. scope withdrawn .-> WO_CANCEL["CANCELLED"]
+    end
+
+    subgraph PROC["2 - Procurement and Receiving"]
+        direction TB
+        PR["Purchase requisition"] --> PO["Purchase order"]
+        PO --> GR["Goods receipt"]
+        GR --> RESTOCK["Inventory replenished"]
+
+        PR -. approval denied .-> PR_REJECT["REJECTED"]
+        PO -. supplier failure .-> PO_CANCEL["CANCELLED"]
+    end
+
+    subgraph FIN["3 - Fiscal and Finance"]
+        direction TB
+        FI["Fiscal invoice"] --> VAL{"Validation"}
+
+        VAL -->|clean| POSTED["POSTED"]
+        VAL -->|exception| BLOCKED["BLOCKED"]
+        BLOCKED -->|resolved| RELEASED["RELEASED"]
+
+        POSTED --> AP["Accounts payable"]
+        RELEASED --> AP
+        AP --> PAY["Payment"]
+        AP -. reversal .-> VOIDED["VOIDED"]
+    end
+
+    SHORTAGE --> PR
+    GR --> FI
 ```
 
 The resulting data therefore contains useful causal relationships rather than independent synthetic records.
@@ -86,50 +89,101 @@ The resulting data therefore contains useful causal relationships rather than in
 
 ## Repository structure
 
+The source tree follows the same architectural boundaries as the platform:
+
 ```text
 .
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       └── cd.yml
 ├── databricks.yml
 ├── README.md
+├── requirements-ci.txt
 ├── resources/
-│   └── mro_pipeline.job.yml
+│   ├── mro_simulator.job.yml
+│   ├── mro_analytics.job.yml
+│   └── mro_genie.yml
+├── scripts/
+│   └── cd/
+│       └── blue_green.sh
+├── tests/
+│   └── architecture/
+│       ├── conftest.py
+│       ├── test_bundle.py
+│       ├── test_job_graph.py
+│       ├── test_layer_boundaries.py
+│       ├── test_semantic_coverage.py
+│       ├── test_schema_evolution.py
+│       ├── test_platform_hardening.py
+│       └── test_workflows.py
 └── src/
-    ├── 01_simulate_mro.py
-    ├── 02_bronze_ingest.py
-    ├── 03_silver_master.py
-    ├── 04_silver_mro.py
-    ├── 04_silver_stock.py
-    ├── 04_silver_procurement.py
-    ├── 04_silver_finance.py
-    ├── 05_gold_dimensions.py
-    ├── 06_gold_mro.py
-    ├── 06_gold_stock.py
-    ├── 06_gold_procurement.py
-    ├── 06_gold_finance.py
-    ├── 07_semantic_model.py
-    └── 08_quality_gate.py
+    ├── operational/
+    │   └── 01_simulate_mro.py
+    │
+    ├── data_engineering/
+    │   ├── 02_bronze_ingest.py
+    │   ├── 03_silver_master.py
+    │   ├── 04_silver_mro.py
+    │   ├── 04_silver_stock.py
+    │   ├── 04_silver_procurement.py
+    │   ├── 04_silver_finance.py
+    │   ├── 05_gold_dimensions.py
+    │   ├── 06_gold_mro.py
+    │   ├── 06_gold_stock.py
+    │   ├── 06_gold_procurement.py
+    │   ├── 06_gold_finance.py
+    │   └── 08_quality_gate.py
+    │
+    └── analytics/
+        ├── 07_semantic_model.py
+        └── 09_process_mining.py
 ```
+
+The directory boundaries are intentional:
+
+```mermaid
+flowchart LR
+    OP["src/operational<br/>Source-system behavior"]
+    DE["src/data_engineering<br/>Bronze · Silver · Gold · Quality"]
+    AN["src/analytics<br/>Semantic cubes"]
+
+    OP -->|"Delta CDF source interface"| DE
+    DE -->|"Gold facts & dimensions"| AN
+```
+
+There is no direct Job dependency between `operational` and `data_engineering`. The analytical side observes independently committed source changes through Delta Change Data Feed.
 
 ### Asset inventory
 
 | Asset | Responsibility |
 |---|---|
-| `databricks.yml` | Bundle root configuration. Defines the bundle name, reusable schema variables, and `dev` / `prod` deployment targets. |
-| `resources/mro_pipeline.job.yml` | Complete Databricks Job definition: task DAG, parameters, schedule, queueing, and concurrency. |
-| `src/01_simulate_mro.py` | Stateful synthetic MRO source-system simulator backed by Delta tables. |
-| `src/02_bronze_ingest.py` | Incremental source-faithful ingestion into Bronze using simulation ticks as watermarks. |
-| `src/03_silver_master.py` | Normalizes and conforms supplier, material, asset, warehouse, and cost-center master data. |
-| `src/04_silver_mro.py` | Enriches maintenance work orders, material fulfillment, status history, and lifecycle durations. |
-| `src/04_silver_stock.py` | Normalizes inventory events and current stock position. |
-| `src/04_silver_procurement.py` | Normalizes requisitions, purchase orders, PO items, and goods receipts; derives procurement lead-time attributes. |
-| `src/04_silver_finance.py` | Normalizes fiscal invoices, invoice items, accounts payable, and payments. |
-| `src/05_gold_dimensions.py` | Builds conformed dimensions and a date dimension. |
-| `src/06_gold_mro.py` | Builds dimensional maintenance facts. |
-| `src/06_gold_stock.py` | Builds dimensional inventory facts and stock snapshots. |
-| `src/06_gold_procurement.py` | Builds purchase-order and goods-receipt facts. |
-| `src/06_gold_finance.py` | Builds fiscal, accounts-payable, and payment facts. |
-| `src/07_semantic_model.py` | Creates Unity Catalog metric views for governed MRO KPIs. |
-| `src/08_quality_gate.py` | Executes cross-layer invariants and fails the Job when critical data-quality rules are violated. |
-
+| `databricks.yml` | Bundle root configuration. Defines the platform bundle and reusable catalog/schema variables. |
+| `resources/mro_simulator.job.yml` | Independent operational simulation Job and its simulator-specific schedule/parameters. |
+| `resources/mro_analytics.job.yml` | Analytical Job: Bronze → Silver → Gold → Semantic + Process Mining → Expectations → Observability → quality gate. |
+| `resources/mro_genie.yml` | Managed Genie space over the ten governed metric views. |
+| `src/operational/01_simulate_mro.py` | Stateful synthetic MRO source-system simulator backed by Delta tables. |
+| `src/data_engineering/02_bronze_ingest.py` | Incremental Delta CDF ingestion with analytics-owned per-table commit checkpoints. |
+| `src/data_engineering/03_silver_master.py` | Conforms supplier, material, asset, warehouse, and cost-center master data. |
+| `src/data_engineering/04_silver_mro.py` | Maintenance lifecycle normalization and enrichment. |
+| `src/data_engineering/04_silver_stock.py` | Inventory movement and stock-position normalization. |
+| `src/data_engineering/04_silver_procurement.py` | Procurement and receiving normalization/enrichment. |
+| `src/data_engineering/04_silver_finance.py` | Fiscal, AP, and payment normalization/enrichment. |
+| `src/data_engineering/05_gold_dimensions.py` | Conformed dimensions; supplier, material, and asset use SCD Type 2. |
+| `src/data_engineering/06_gold_mro.py` | Maintenance facts. |
+| `src/data_engineering/06_gold_stock.py` | Inventory facts. |
+| `src/data_engineering/06_gold_procurement.py` | Procurement and receiving facts. |
+| `src/data_engineering/06_gold_finance.py` | Fiscal and financial facts. |
+| `src/analytics/07_semantic_model.py` | Ten governed analytical cubes over the ten Gold facts. |
+| `src/analytics/09_process_mining.py` | Process-event, case, and transition models over `entity_state_transition`. |
+| `src/data_engineering/08_expectations.py` | Declarative data-quality rule catalog and generic expectation runner. |
+| `src/data_engineering/09_observability.py` | Row-count and Delta freshness observations persisted in the ops schema. |
+| `src/data_engineering/08_quality_gate.py` | Cross-layer publication contract, including semantic fact/cube coverage. |
+| `.github/workflows/ci.yml` | Python, architectural, schema-evolution, and Databricks Bundle validation. |
+| `.github/workflows/cd.yml` | Unified DEV/STAGING/PROD blue-green delivery with isolated catalog integration tests. |
+| `scripts/cd/blue_green.sh` | Discovers active slots and performs safe schedule cutover/rollback without redeploying the active slot. |
+| `tests/architecture/` | Executable architectural contracts for bundle structure, layer boundaries, Job DAGs, and semantic coverage. |
+| `requirements-ci.txt` | Minimal Python dependencies used by GitHub Actions. |
 ---
 
 ## Databricks catalog layout
@@ -151,15 +205,36 @@ The notebooks already centralize identifier quoting, so the hyphenated catalog n
 
 The project creates or uses five schemas:
 
-```text
-`mro-data`
-│
-├── mro_sim    # synthetic operational source system
-├── bronze     # source-faithful ingestion boundary
-├── silver     # normalized, validated, enriched domain models
-├── gold       # dimensional analytical models
-└── semantic   # governed Unity Catalog metric views
+```mermaid
+flowchart LR
+
+    C["mro-data catalog"]
+
+    subgraph OP["Operational"]
+        direction TB
+        SRC["mro_sim"]
+    end
+
+    subgraph DE["Data Engineering"]
+        direction LR
+        B["bronze"] --> S["silver"] --> G["gold"]
+    end
+
+    subgraph AN["Analytics"]
+        direction TB
+        SEM["semantic"]
+    end
+
+    C --> SRC
+    SRC -. committed source state .-> B
+    G --> SEM
 ```
+
+The diagram deliberately keeps node labels simple for broad Mermaid-renderer compatibility. The ownership is:
+
+- `mro_sim` — synthetic operational source;
+- `bronze → silver → gold` — data-engineering layers;
+- `semantic` — governed analytical cubes.
 
 ### Layer responsibilities
 
@@ -173,7 +248,7 @@ The project creates or uses five schemas:
 
 ---
 
-# 1. Operational source simulator — `01_simulate_mro.py`
+# 1. Operational source simulator — `src/operational/01_simulate_mro.py`
 
 The simulator is the source system for the rest of the project. It is intentionally **job-oriented**, not a continuously running service.
 
@@ -206,10 +281,13 @@ Its main concepts are:
 
 Example:
 
-```text
-run 1   committed_tick 0 → 1
-run 2   committed_tick 1 → 2
-run 3   committed_tick 2 → 3
+```mermaid
+flowchart LR
+    R1["Run 1<br/>committed_tick 0 → 1"]
+    R2["Run 2<br/>committed_tick 1 → 2"]
+    R3["Run 3<br/>committed_tick 2 → 3"]
+
+    R1 --> R2 --> R3
 ```
 
 With:
@@ -220,39 +298,58 @@ step_minutes = 60
 
 one tick represents one simulated hour.
 
-## Why `committed_tick` exists
+## Why `committed_tick` still exists
 
-A business action can touch several Delta tables. Delta transactions are atomic at a table level, not across an arbitrary set of tables.
+`committed_tick` remains useful **inside the operational simulator**. It is a private recovery and deterministic-generation checkpoint.
 
-The simulator therefore treats `committed_tick` as a visibility boundary:
+The analytical platform deliberately does **not** consume that tick.
 
-```text
-write state/event rows for tick N
-        │
-        ▼
-flush affected Delta tables
-        │
-        ▼
-advance sim_state.committed_tick to N
+```mermaid
+flowchart LR
+    T["Private simulation tick"]
+    OP["Operational persistence"]
+    CDF["Delta Change Data Feed"]
+    B["Bronze CDC ingestion"]
+
+    T --> OP
+    OP --> CDF
+    CDF --> B
+    T -. not an analytics watermark .-> B
 ```
 
-Downstream ingestion only consumes rows whose simulation tick is at or below the committed source tick.
-
-This prevents the analytical pipeline from intentionally consuming a partially persisted logical simulation interval.
-
+The simulator may know a globally consistent logical step; downstream analytics behaves like an external consumer and only observes independently committed source changes.
 ## Determinism and retries
 
 The simulator uses deterministic IDs and a per-tick random seed derived from the configured seed and tick number.
 
 Conceptually:
 
-```text
-same seed + same tick + same entity context
-                    ↓
-            same generated identity
+```mermaid
+flowchart LR
+    I["Same seed + same tick + same entity context"]
+    O["Same generated identity"]
+
+    I --> O
 ```
 
 This makes replay/retry behavior substantially safer than generating new random identifiers on every Job attempt.
+
+## Exception-path simulation
+
+The simulator intentionally produces a small number of non-happy outcomes so exception handling is represented in the data, not only in the diagrams.
+
+Current default exception rates are encoded in `EXCEPTION_RATES` inside `01_simulate_mro.py`:
+
+| Exception | Default rate | Result |
+|---|---:|---|
+| Work order withdrawn before release | 2% | `work_order → CANCELLED`, with outstanding material demand cancelled |
+| Requisition rejected at approval | 3% | `purchase_requisition → REJECTED` |
+| Supplier cancels before first PO receipt | 2% | `purchase_order → CANCELLED` and linked requisition → `CANCELLED` |
+| AP title reversed | 1% deterministic cohort | `accounts_payable → VOIDED` |
+
+Fiscal exceptions are generated from price/tax discrepancies rather than a single generic rate and follow `VALIDATING → BLOCKED → RELEASED`.
+
+These rates are deliberately low: the primary flow remains dominant, while the analytical layers still receive enough exception cases to validate lifecycle logic and exception-oriented KPIs.
 
 ## Operational domains
 
@@ -282,62 +379,127 @@ It generates transactional behavior for:
 
 ## Stateful workflows
 
+Each workflow has both a **normal completion path** and an explicit **business escape path**. Escape states are terminal and auditable rather than leaving an entity indefinitely parked in an intermediate state.
+
+The exception semantics are domain-specific:
+
+- maintenance demand can be `CANCELLED`;
+- material demand can be `CANCELLED` when the parent work order is withdrawn;
+- requisitions can be `REJECTED` or `CANCELLED`;
+- purchase orders can be `CANCELLED`;
+- fiscal validation uses `BLOCKED → RELEASED` as its unhappy-but-resolved route and still has only the two terminal outcomes `POSTED` and `RELEASED`;
+- accounts-payable titles can be `VOIDED`.
+
+
 ### Work order
 
-```text
-PLANNED
-   ↓
-RELEASED
-   ├───────────────┐
-   ▼               │
-WAITING_MATERIAL   │
-   └──────────────►│
-              IN_PROGRESS
-                   ↓
-               COMPLETED
-                   ↓
-                 CLOSED
+```mermaid
+stateDiagram-v2
+    [*] --> PLANNED
+
+    PLANNED --> RELEASED: release
+    RELEASED --> WAITING_MATERIAL: shortage
+    RELEASED --> IN_PROGRESS: material available
+    WAITING_MATERIAL --> IN_PROGRESS: material fulfilled
+    IN_PROGRESS --> COMPLETED: work finished
+    COMPLETED --> CLOSED: administrative close
+
+    PLANNED --> CANCELLED: scope withdrawn
+    RELEASED --> CANCELLED: maintenance no longer required
+    WAITING_MATERIAL --> CANCELLED: demand withdrawn
+
+    CLOSED --> [*]
+    CANCELLED --> [*]
 ```
 
 ### Work-order material
 
-```text
-REQUESTED
-   ↓
-PARTIALLY_ISSUED
-   ↓
-FULFILLED
+```mermaid
+stateDiagram-v2
+    [*] --> REQUESTED
+
+    REQUESTED --> PARTIALLY_ISSUED: partial stock issue
+    REQUESTED --> FULFILLED: full stock issue
+    PARTIALLY_ISSUED --> FULFILLED: remaining quantity issued
+
+    REQUESTED --> CANCELLED: parent work order cancelled
+    PARTIALLY_ISSUED --> CANCELLED: remaining demand withdrawn
+
+    FULFILLED --> [*]
+    CANCELLED --> [*]
 ```
 
 ### Purchase requisition
 
-```text
-REQUESTED → APPROVED → ORDERED → CLOSED
+```mermaid
+stateDiagram-v2
+    [*] --> REQUESTED
+
+    REQUESTED --> APPROVED: approval granted
+    APPROVED --> ORDERED: purchase order created
+    ORDERED --> CLOSED: material fully received
+
+    REQUESTED --> REJECTED: approval denied
+    APPROVED --> CANCELLED: demand withdrawn
+    ORDERED --> CANCELLED: downstream purchase order cancelled
+
+    CLOSED --> [*]
+    REJECTED --> [*]
+    CANCELLED --> [*]
 ```
 
 ### Purchase order
 
-```text
-APPROVED → SENT → PARTIALLY_RECEIVED → RECEIVED → CLOSED
+```mermaid
+stateDiagram-v2
+    [*] --> APPROVED
+
+    APPROVED --> SENT: transmitted to supplier
+    SENT --> PARTIALLY_RECEIVED: partial delivery
+    PARTIALLY_RECEIVED --> PARTIALLY_RECEIVED: another partial delivery
+    SENT --> RECEIVED: full delivery
+    PARTIALLY_RECEIVED --> RECEIVED: remaining balance delivered
+    RECEIVED --> CLOSED: fiscal lifecycle completed
+
+    APPROVED --> CANCELLED: order withdrawn
+    SENT --> CANCELLED: supplier failure / cancellation
+    PARTIALLY_RECEIVED --> CANCELLED: remaining balance cancelled
+
+    CLOSED --> [*]
+    CANCELLED --> [*]
 ```
 
 A PO may receive multiple partial receipts before becoming fully received.
 
 ### Fiscal invoice
 
-```text
-RECEIVED
-   ↓
-VALIDATING
-   ├──────────────► MATCHED ─────► POSTED
-   │
-   └──► BLOCKED ─► RELEASED ─────► MATCHED
+```mermaid
+stateDiagram-v2
+    [*] --> RECEIVED
+    RECEIVED --> VALIDATING
+    VALIDATING --> POSTED: validation succeeds
+    VALIDATING --> BLOCKED: exception found
+    BLOCKED --> RELEASED: exception resolved
+    POSTED --> [*]
+    RELEASED --> [*]
 ```
+
+`POSTED` and `RELEASED` are the two terminal fiscal outcomes. `POSTED` represents the straight-through path, while `RELEASED` represents an invoice that was blocked and subsequently cleared through exception handling. Both outcomes may create an accounts-payable item; AP is a downstream financial workflow rather than another fiscal-invoice state.
 
 ### Accounts payable
 
-```text
-OPEN → SCHEDULED → PAID
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN
+
+    OPEN --> SCHEDULED: payment run
+    SCHEDULED --> PAID: payment executed
+
+    OPEN --> VOIDED: title reversed / cancelled
+    SCHEDULED --> VOIDED: scheduled payment reversed
+
+    PAID --> [*]
+    VOIDED --> [*]
 ```
 
 ## Physical source tables
@@ -355,12 +517,14 @@ material
 asset_material_profile
 ```
 
-### Simulation control
+### Private simulation control
 
 ```text
 sim_state
 simulation_run
 ```
+
+These are operational implementation details. They are **not ingested by Bronze** and do not participate in the analytical source contract.
 
 ### Versioned mutable state
 
@@ -419,112 +583,117 @@ State-history views are also generated for versioned entities.
 
 ---
 
-# 2. Bronze ingestion — `02_bronze_ingest.py`
+# 2. Bronze ingestion — `src/data_engineering/02_bronze_ingest.py`
 
-Bronze is the ingestion and replay boundary.
+Bronze is a **CDC boundary**, not an extension of the simulator.
 
-It answers:
+It asks:
 
-> What did the simulated operational source expose?
+> Which independently committed source changes has analytics observed?
 
-It deliberately does **not** answer:
+It does **not** ask which simulation tick is globally complete.
 
-> What is the business interpretation of this data?
+## Source interface
 
-## Incremental contract
-
-Bronze compares:
+Operational Delta tables expose Change Data Feed. Bronze publishes source-side commit metadata as:
 
 ```text
-mro_sim.sim_state.committed_tick
-```
-
-with the persisted per-table watermark in:
-
-```text
-bronze.pipeline_watermark
-```
-
-Example:
-
-```text
-source committed_tick = 483
-bronze last_tick       = 480
-
-rows ingested:
-481
-482
-483
-```
-
-The watermark is then advanced to `483`.
-
-## Bronze metadata
-
-Ingested data receives ingestion metadata such as:
-
-```text
+_source_change_type
+_source_commit_version
+_source_commit_timestamp
 _bronze_ingested_at
 _bronze_run_id
 _source_table
-_source_committed_tick
+_source_record_hash
 ```
 
-## Bronze objects
+The simulator-private sequencing columns `valid_from_tick` and `simulation_tick` are removed at the Bronze boundary. `sim_state` and `simulation_run` are not ingested.
 
-Master/reference snapshots:
+## Per-table checkpoints
+
+Bronze persists `bronze.ingestion_checkpoint` with one independent position per source table:
 
 ```text
-supplier_raw
-warehouse_raw
-cost_center_raw
-asset_raw
-material_raw
-asset_material_profile_raw
-sim_state_raw
-simulation_run_raw
+source_table
+last_commit_version
+last_commit_timestamp
+updated_at
 ```
 
-Versioned source state:
+There is intentionally no global analytical watermark.
+
+```mermaid
+flowchart LR
+    WO["work_order_state"] --> CP["Independent CDC checkpoints"]
+    IM["inventory_movement_store"] --> CP
+    PO["purchase_order_state"] --> CP
+```
+
+## Stability lag
+
+The analytical Job defaults to:
 
 ```text
-stock_balance_state_raw
-work_order_state_raw
-work_order_material_state_raw
-purchase_requisition_state_raw
-purchase_order_state_raw
-purchase_order_item_state_raw
-fiscal_invoice_state_raw
-accounts_payable_state_raw
+source_stability_lag_minutes = 5
 ```
 
-Append/event history:
+Bronze only consumes commits older than `analytics_start_time - stability_lag`. This reduces the chance of observing a cross-table business action while it is still being persisted, but it is **not** an atomicity guarantee.
+
+## Initial baseline
+
+On first observation:
+
+- master/reference tables are snapshotted at the latest stable Delta version;
+- state tables publish the latest visible state per business key;
+- append/event tables publish their stable history.
+
+That version becomes the first checkpoint. Subsequent runs consume CDF from `last_commit_version + 1` through the latest stable version.
+
+## Three notions of time
+
+The analytical model distinguishes:
 
 ```text
-purchase_requisition_item_raw
-goods_receipt_raw
-goods_receipt_item_raw
-inventory_movement_raw
-fiscal_invoice_item_raw
-payment_raw
-entity_state_transition_raw
-event_log_raw
+business/event time
+source commit time
+analytics ingestion time
 ```
 
-Control:
+For example:
 
 ```text
-pipeline_watermark
+occurred_at                 = 14:02
+_source_commit_timestamp    = 14:02:05
+_bronze_ingested_at         = 14:08
 ```
 
-## Important design choice
+This allows ingestion-latency and late-arrival analysis without exposing simulator sequencing.
 
-**Bronze is currently the physically incremental analytical layer.**
+## Analytical data horizon
 
-Silver and Gold are deterministic rebuilds from committed Bronze data. This is intentional for the current dataset size: it keeps correctness and explainability high while still exercising a real incremental ingestion boundary.
+Bronze derives `data_horizon_at` from the latest observed business event and stores it in `bronze.ingestion_run`. Silver uses that observed horizon for open lifecycle durations and overdue calculations. It is not an ingestion watermark and does not claim global completeness.
 
-Incremental `MERGE` strategies can later be introduced selectively for larger Silver/Gold models when the additional state-management complexity is justified.
+## Eventual consistency
 
+Temporary cross-table inconsistency is allowed. Bronze preserves what it observed instead of inventing cross-table atomicity.
+
+The quality gate distinguishes hard structural invariants from cross-entity reconciliation invariants. Cross-entity mismatches become fatal only after:
+
+```text
+reconciliation_failure_threshold = 3
+```
+
+consecutive analytical runs by default.
+
+## Bronze control objects
+
+```text
+ingestion_checkpoint
+ingestion_run
+reconciliation_check_state
+```
+
+Bronze remains the physically incremental analytical layer. Silver and Gold remain deterministic rebuilds from the latest observed Bronze state for the current project scale.
 ---
 
 # 3. Silver layer
@@ -544,7 +713,7 @@ Its responsibilities include:
 
 Silver keeps operational grains rather than collapsing everything into dashboard aggregates.
 
-## `03_silver_master.py`
+## `src/data_engineering/03_silver_master.py`
 
 Produces conformed reference entities:
 
@@ -566,7 +735,7 @@ Examples of normalization:
 
 The notebook also validates important master-data conditions such as duplicate IDs and missing supplier/cost-center references.
 
-## `04_silver_mro.py`
+## `src/data_engineering/04_silver_mro.py`
 
 Produces:
 
@@ -592,7 +761,7 @@ This is the main source for maintenance-cycle analysis and for questions such as
 
 > How much maintenance delay was caused by material availability?
 
-## `04_silver_stock.py`
+## `src/data_engineering/04_silver_stock.py`
 
 Produces:
 
@@ -613,7 +782,7 @@ Enrichment includes:
 
 The notebook rejects negative on-hand or reserved quantities.
 
-## `04_silver_procurement.py`
+## `src/data_engineering/04_silver_procurement.py`
 
 Produces:
 
@@ -640,7 +809,7 @@ Derived procurement attributes include:
 
 The notebook validates that received quantities never exceed ordered quantities.
 
-## `04_silver_finance.py`
+## `src/data_engineering/04_silver_finance.py`
 
 Produces:
 
@@ -667,7 +836,7 @@ Enrichment includes:
 
 Gold switches intentionally from operational modeling to analytical dimensional modeling.
 
-## `05_gold_dimensions.py`
+## `src/data_engineering/05_gold_dimensions.py`
 
 Creates the conformed dimensions:
 
@@ -684,7 +853,7 @@ Surrogate analytical keys are deterministic `BIGINT` hashes of durable source ID
 
 The date dimension follows the simulated business horizon rather than the wall-clock date on which the Databricks Job happens to execute.
 
-## `06_gold_mro.py`
+## `src/data_engineering/06_gold_mro.py`
 
 Creates:
 
@@ -700,7 +869,7 @@ fact_work_order          = one row per work order
 fact_work_order_material = one row per work-order/material requirement
 ```
 
-## `06_gold_stock.py`
+## `src/data_engineering/06_gold_stock.py`
 
 Creates:
 
@@ -716,7 +885,7 @@ fact_inventory_movement = one row per inventory movement
 fact_stock_position      = one row per material × warehouse at the current simulation snapshot
 ```
 
-## `06_gold_procurement.py`
+## `src/data_engineering/06_gold_procurement.py`
 
 Creates:
 
@@ -740,7 +909,7 @@ The PO-item fact includes useful supplier-performance attributes such as:
 - partial receipt;
 - on-time-in-full indicator.
 
-## `06_gold_finance.py`
+## `src/data_engineering/06_gold_finance.py`
 
 Creates:
 
@@ -755,101 +924,268 @@ Primary grains remain explicit: invoice, invoice item, payable title, and paymen
 
 ---
 
-# 5. Semantic layer — `07_semantic_model.py`
+# 5. Semantic layer — `src/analytics/07_semantic_model.py`
 
-The semantic layer creates Unity Catalog **metric views** using `CREATE OR REPLACE VIEW ... WITH METRICS LANGUAGE YAML`.
+The semantic layer implements **analytical cubes as Unity Catalog metric views**.
 
-It intentionally sits above Gold so reusable business definitions do not leak into raw ingestion or domain normalization.
+The project now enforces a strict semantic-coverage invariant:
 
-The project currently defines five metric views.
+> **Every Gold fact table must be the primary source of exactly one analytical cube.**
 
-## `semantic.maintenance_metrics`
+This is deliberate. A metric view models one fact grain with reusable measures and many-to-one dimension joins. Keeping one primary cube per fact prevents accidental cross-grain fan-out while still exposing every analytical mart to BI, SQL, dashboards, and AI consumers.
 
-Dimensions include:
+## Fact-to-cube coverage
 
-- planned date;
-- maintenance type;
-- priority;
-- status;
-- asset type;
-- asset criticality;
-- cost center.
+```mermaid
+flowchart TB
+    subgraph MRO["Maintenance"]
+        FWO["gold.fact_work_order"] --> CWO["semantic.maintenance_metrics"]
+        FWOM["gold.fact_work_order_material"] --> CWOM["semantic.maintenance_material_metrics"]
+    end
 
-Measures include:
+    subgraph INV["Inventory"]
+        FIM["gold.fact_inventory_movement"] --> CIM["semantic.inventory_metrics"]
+        FSP["gold.fact_stock_position"] --> CSP["semantic.inventory_position_metrics"]
+    end
 
-```text
-work_order_count
-completed_work_order_count
-corrective_work_order_count
-estimated_material_cost
-avg_material_wait_hours
-avg_execution_hours
-avg_cycle_hours
-material_wait_ratio
+    subgraph PROC["Procurement & Receiving"]
+        FPO["gold.fact_purchase_order_item"] --> CPO["semantic.procurement_metrics"]
+        FGR["gold.fact_goods_receipt_item"] --> CGR["semantic.receiving_metrics"]
+    end
+
+    subgraph FISC["Fiscal"]
+        FFI["gold.fact_fiscal_invoice"] --> CFI["semantic.invoice_metrics"]
+        FFII["gold.fact_fiscal_invoice_item"] --> CFII["semantic.fiscal_item_metrics"]
+    end
+
+    subgraph FIN["Finance"]
+        FAP["gold.fact_accounts_payable"] --> CAP["semantic.payables_metrics"]
+        FPAY["gold.fact_payment"] --> CPAY["semantic.payment_metrics"]
+    end
 ```
 
-## `semantic.inventory_metrics`
+| Gold fact | Primary grain | Analytical cube |
+|---|---|---|
+| `fact_work_order` | one row per work order | `semantic.maintenance_metrics` |
+| `fact_work_order_material` | one row per work-order material requirement | `semantic.maintenance_material_metrics` |
+| `fact_inventory_movement` | one row per inventory movement | `semantic.inventory_metrics` |
+| `fact_stock_position` | one row per material × warehouse snapshot | `semantic.inventory_position_metrics` |
+| `fact_purchase_order_item` | one row per purchase-order item | `semantic.procurement_metrics` |
+| `fact_goods_receipt_item` | one row per goods-receipt item | `semantic.receiving_metrics` |
+| `fact_fiscal_invoice` | one row per fiscal invoice | `semantic.invoice_metrics` |
+| `fact_fiscal_invoice_item` | one row per fiscal invoice item | `semantic.fiscal_item_metrics` |
+| `fact_accounts_payable` | one row per payable title | `semantic.payables_metrics` |
+| `fact_payment` | one row per executed payment | `semantic.payment_metrics` |
 
-Measures include:
-
-```text
-movement_count
-issued_quantity
-received_quantity
-net_quantity
-net_movement_value
-adjustment_quantity
-```
-
-## `semantic.procurement_metrics`
-
-Measures include:
+The notebook also publishes:
 
 ```text
-purchase_order_count
-purchase_order_item_count
-ordered_value
-ordered_quantity
-received_quantity
-fill_rate
-avg_delivery_variance_hours
-late_purchase_order_count
-otif_purchase_order_count
-partial_line_count
+semantic.cube_registry
 ```
 
-## `semantic.invoice_metrics`
+This ordinary view records `cube_name`, `fact_table`, `domain`, and `grain`. The final quality gate uses it to verify semantic coverage programmatically.
 
-Measures include:
+## Maintenance cubes
+
+### `semantic.maintenance_metrics`
+
+Source:
 
 ```text
-invoice_count
-invoice_value
-blocked_invoice_count
-blocked_invoice_rate
-avg_abs_price_variance_pct
-tax_issue_count
+gold.fact_work_order
 ```
 
-## `semantic.payables_metrics`
+Primary analysis:
 
-Measures include:
+- work-order volume and completion;
+- preventive/corrective mix;
+- cancellations;
+- material-wait incidence;
+- planning, wait, execution, and total-cycle duration;
+- estimated material cost;
+- breakdown by date, asset, criticality, cost center, warehouse, priority, and status.
+
+### `semantic.maintenance_material_metrics`
+
+Source:
 
 ```text
-payable_count
-payable_amount
-open_amount
-paid_amount
-overdue_amount
-overdue_count
-avg_days_to_pay
+gold.fact_work_order_material
 ```
+
+Primary analysis:
+
+- required, issued, and open material quantity;
+- quantity fulfillment rate;
+- fulfilled / partially issued / cancelled demand lines;
+- estimated issued-material cost;
+- work-order count affected by material demand;
+- breakdown by material, asset, maintenance type, priority, cost center, warehouse, and planned date.
+
+`fact_work_order_material` is enriched in Gold with the relevant work-order dimensional keys so this cube remains a true star-schema model instead of joining one fact directly to another fact.
+
+## Inventory cubes
+
+### `semantic.inventory_metrics`
+
+Source:
+
+```text
+gold.fact_inventory_movement
+```
+
+Primary analysis:
+
+- receipt and issue quantities;
+- net and absolute material flow;
+- inventory-movement value;
+- cycle-count adjustments;
+- breakdown by material, category, criticality, warehouse, movement type, direction, and date.
+
+### `semantic.inventory_position_metrics`
+
+Source:
+
+```text
+gold.fact_stock_position
+```
+
+Primary analysis:
+
+- on-hand, reserved, and available quantity;
+- inventory value;
+- positions below reorder point;
+- out-of-stock positions;
+- current stock availability by material and warehouse.
+
+The current Gold stock-position fact is a **current simulation snapshot**, not yet a historical accumulating snapshot. The cube therefore answers current-position questions; retaining periodic historical snapshots is a future extension.
+
+## Procurement and receiving cubes
+
+### `semantic.procurement_metrics`
+
+Source:
+
+```text
+gold.fact_purchase_order_item
+```
+
+Primary analysis:
+
+- ordered, received, and open quantity/value;
+- fill rate;
+- supplier delivery variance;
+- late and cancelled orders;
+- OTIF count;
+- partial receipts;
+- breakdown by supplier, material, warehouse, and order date.
+
+### `semantic.receiving_metrics`
+
+Source:
+
+```text
+gold.fact_goods_receipt_item
+```
+
+Primary analysis:
+
+- receipt count and receipt-line count;
+- received quantity;
+- receipt value;
+- average unit price and receipt value;
+- distinct purchase orders received;
+- breakdown by supplier, material, warehouse, and receipt date.
+
+## Fiscal cubes
+
+### `semantic.invoice_metrics`
+
+Source:
+
+```text
+gold.fact_fiscal_invoice
+```
+
+Primary analysis:
+
+- invoice count and value;
+- subtotal and tax value;
+- `POSTED` vs `RELEASED` terminal outcomes;
+- blocked-invoice count/rate;
+- tax issues;
+- price variance;
+- supplier and receipt-date analysis.
+
+### `semantic.fiscal_item_metrics`
+
+Source:
+
+```text
+gold.fact_fiscal_invoice_item
+```
+
+Primary analysis:
+
+- invoiced quantity and merchandise value;
+- ICMS, IPI, PIS, and COFINS amounts;
+- total tax amount;
+- effective tax rate;
+- breakdown by supplier, material, NCM, category, and receipt date.
+
+## Finance cubes
+
+### `semantic.payables_metrics`
+
+Source:
+
+```text
+gold.fact_accounts_payable
+```
+
+Primary analysis:
+
+- payable exposure;
+- open, scheduled, paid, voided, and overdue value;
+- payable and void counts;
+- average days to pay and days past due;
+- supplier, posting-date, and due-date analysis.
+
+`VOIDED` titles are excluded from `open_amount`.
+
+### `semantic.payment_metrics`
+
+Source:
+
+```text
+gold.fact_payment
+```
+
+Primary analysis:
+
+- payment count;
+- number of payable titles settled;
+- total cash outflow;
+- average and maximum payment value;
+- supplier and payment-date analysis.
+
+## Why one primary cube per fact?
+
+Different facts have different grains. For example:
+
+```text
+fact_fiscal_invoice      = invoice grain
+fact_fiscal_invoice_item = invoice-item grain
+```
+
+Combining their measures naively in one star schema can multiply invoice-level values by the number of items. The project therefore keeps a primary metric view at each fact grain and lets consumers choose the cube appropriate to the question.
+
+If a future use case genuinely requires measures from multiple fact grains in one semantic object, it should use an explicit bridge/composable metric-view design rather than an implicit fact-to-fact join.
 
 Metric views require Unity Catalog and a Databricks runtime / SQL environment that supports metric views.
-
 ---
 
-# 6. Quality gate — `08_quality_gate.py`
+# 6. Quality gate — `src/data_engineering/08_quality_gate.py`
 
 The final notebook is deliberately a **hard gate**, not a passive report.
 
@@ -866,151 +1202,355 @@ orphan_gold_work_order_asset
 orphan_gold_inventory_material
 duplicate_gold_material_key
 watermark_ahead_of_source
+semantic_fact_coverage
+semantic_cube_coverage
 ```
 
 This means a green Job run communicates more than "the notebooks executed". It also means the core cross-layer invariants passed.
 
 ---
 
-# Job DAG
+# Independent Jobs
 
-The full Job is declared in:
+The Bundle deploys **two independent Jobs**. Neither Job is a task of the other, and there is no `depends_on` relationship between them.
+
+Their integration contract is:
 
 ```text
-resources/mro_pipeline.job.yml
+mro_sim.sim_state.committed_tick
+        +
+persisted source Delta tables
+        +
+bronze.ingestion_checkpoint
 ```
 
-The effective dependency graph is:
+This models a real source/analytics boundary: operational activity can continue while analytics is delayed or failing, and analytics can catch up later from the committed source history.
+
+## Operational Job — `mro-source-simulator`
+
+Declared in:
+
+```text
+resources/mro_simulator.job.yml
+```
+
+The Job contains exactly one task:
 
 ```mermaid
-flowchart TD
-    A[01 simulate_mro] --> B[02 bronze_ingest]
-    B --> C[03 silver_master]
-
-    C --> D1[04 silver_mro]
-    C --> D2[04 silver_stock]
-    C --> D3[04 silver_procurement]
-    C --> D4[04 silver_finance]
-    C --> E[05 gold_dimensions]
-
-    D1 --> F1[06 gold_mro]
-    E --> F1
-
-    D2 --> F2[06 gold_stock]
-    E --> F2
-
-    D3 --> F3[06 gold_procurement]
-    E --> F3
-
-    D4 --> F4[06 gold_finance]
-    E --> F4
-
-    F1 --> G[07 semantic_model]
-    F2 --> G
-    F3 --> G
-    F4 --> G
-
-    G --> H[08 quality_gate]
+flowchart LR
+    SIM["simulate_mro<br/>src/operational/01_simulate_mro.py"]
 ```
 
-The fan-out is intentional:
+Its default schedule is every **10 minutes**, but the schedule ships paused:
 
-- all domain Silver notebooks depend on conformed master data;
-- Gold dimensions can be built in parallel with the domain Silver notebooks;
-- each Gold fact notebook waits only for its required Silver domain plus Gold dimensions;
-- the semantic task waits for all Gold facts;
-- the quality gate runs last.
+```text
+0 0/10 * * * ?
+America/Sao_Paulo
+pause_status = PAUSED
+```
 
----
+Each run advances the durable operational simulation independently. With the defaults:
 
-# Job execution behavior
+```text
+step_minutes  = 60
+ticks_per_run = 1
+```
 
-The Job is configured with:
+ten minutes of wall-clock time represent one simulated business hour.
+
+The Job uses:
 
 ```text
 max_concurrent_runs = 1
 queue.enabled       = true
 ```
 
-The single-concurrent-run constraint is important because the simulator behaves as a single logical writer advancing the persisted simulation clock.
+because the simulator is a single logical writer advancing one persisted simulation clock.
 
-The bundle also declares an hourly schedule:
+### Operational Job parameters
+
+| Parameter | Default | Meaning |
+|---|---:|---|
+| `catalog` | `mro-data` | Unity Catalog catalog. |
+| `schema` | `mro_sim` | Operational source schema; populated from bundle variable `source_schema`. |
+| `start` | `2026-01-01T08:00:00-03:00` | Initial simulation timestamp. |
+| `step_minutes` | `60` | Simulated minutes per tick. |
+| `ticks_per_run` | `1` | Ticks advanced per simulator invocation. |
+| `commit_every_ticks` | `1` | Maximum ticks between durable flushes. |
+| `seed` | `42` | Deterministic base seed. |
+| `work_orders_per_day` | `8` | Approximate work-order generation rate. |
+| `cycle_counts_per_day` | `3` | Approximate cycle-count rate. |
+| `business_timezone` | `America/Sao_Paulo` | Business-calendar timezone. |
+| `bootstrap_only` | `false` | Initialize source structures without advancing time. |
+| `reset` | `false` | Reset source structures/state before running. Use carefully. |
+
+## Analytical Job — `mro-analytics-pipeline`
+
+Declared in:
 
 ```text
-0 0 * * * ?
-America/Sao_Paulo
+resources/mro_analytics.job.yml
 ```
 
-but ships with:
+The analytical DAG begins at Bronze—not at the simulator:
+
+```mermaid
+flowchart TD
+    B["02 bronze_ingest"] --> C["03 silver_master"]
+
+    C --> D1["04 silver_mro"]
+    C --> D2["04 silver_stock"]
+    C --> D3["04 silver_procurement"]
+    C --> D4["04 silver_finance"]
+    C --> E["05 gold_dimensions"]
+
+    D1 --> F1["06 gold_mro"]
+    E --> F1
+
+    D2 --> F2["06 gold_stock"]
+    E --> F2
+
+    D3 --> F3["06 gold_procurement"]
+    E --> F3
+
+    D4 --> F4["06 gold_finance"]
+    E --> F4
+
+    F1 --> G["07 semantic_model"]
+    F2 --> G
+    F3 --> G
+    F4 --> G
+
+    G --> H["08 quality_gate"]
+```
+
+Its default schedule is every **30 minutes**, also paused by default:
 
 ```text
+0 0/30 * * * ?
+America/Sao_Paulo
 pause_status = PAUSED
 ```
 
-This prevents a newly deployed development bundle from immediately starting periodic execution.
+At each invocation Bronze advances independent per-table Delta commit checkpoints up to the configured stability cutoff. The analytical Job neither reads nor understands the simulator's logical tick.
 
-The Job YAML does not pin an explicit cluster. This setup assumes the target workspace supports the intended serverless Job execution mode. If that is not available for the workspace/task combination, add an explicit Job cluster or another supported compute definition before deployment.
-
----
-
-# Parameters
-
-The Job defines shared parameters once and passes them to Notebook tasks as Databricks widgets.
-
-## Data-platform parameters
+### Analytical Job parameters
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `catalog` | `mro-data` | Unity Catalog catalog containing the project schemas. |
-| `source_schema` | `mro_sim` | Synthetic operational source schema. |
-| `bronze_schema` | `bronze` | Bronze ingestion schema. |
-| `silver_schema` | `silver` | Silver normalization/enrichment schema. |
-| `gold_schema` | `gold` | Gold dimensional schema. |
-| `semantic_schema` | `semantic` | Semantic metric-view schema. |
+| `catalog` | `mro-data` | Unity Catalog catalog containing all project schemas. |
+| `source_schema` | `mro_sim` | Operational source schema. |
+| `bronze_schema` | `bronze` | Incremental ingestion schema. |
+| `silver_schema` | `silver` | Normalized/enriched domain schema. |
+| `gold_schema` | `gold` | Dimensional analytical schema. |
+| `semantic_schema` | `semantic` | Governed metric-view schema. |
+| `source_stability_lag_minutes` | `5` | Delay before source commits become eligible for Bronze ingestion. |
+| `reconciliation_failure_threshold` | `3` | Consecutive runs before a transient cross-entity mismatch becomes fatal. |
 
-## Simulator parameters
-
-| Parameter | Default | Meaning |
-|---|---:|---|
-| `start` | `2026-01-01T08:00:00-03:00` | Initial simulation timestamp. |
-| `step_minutes` | `60` | Simulated minutes advanced per tick. |
-| `ticks_per_run` | `1` | Number of ticks executed by each simulator Job invocation. |
-| `commit_every_ticks` | `1` | Maximum ticks between durable simulation flushes. |
-| `seed` | `42` | Base deterministic random seed. |
-| `work_orders_per_day` | `8` | Approximate synthetic work-order generation rate. |
-| `cycle_counts_per_day` | `3` | Approximate inventory cycle-count rate. |
-| `business_timezone` | `America/Sao_Paulo` | Business-calendar timezone. |
-| `bootstrap_only` | `false` | Create/initialize simulator structures without advancing simulation time. |
-| `reset` | `false` | Reset simulator structures/state before running. Use carefully. |
-
-Example accelerated run:
+The analytical Job also uses:
 
 ```text
-ticks_per_run = 24
-step_minutes  = 60
+max_concurrent_runs = 1
+queue.enabled       = true
 ```
 
-advances approximately one simulated day per Job execution.
+to avoid overlapping rebuilds and competing publication attempts.
 
+## Decoupled execution example
+
+The operational and analytical Jobs have no orchestration dependency. Analytics only observes source commits that are available through Delta Change Data Feed.
+
+```mermaid
+sequenceDiagram
+    participant S as mro-source-simulator
+    participant O as Operational Delta tables
+    participant A as mro-analytics-pipeline
+    participant B as Bronze checkpoints
+
+    S->>O: source commits advance independently
+    S->>O: more operational commits
+
+    A->>O: inspect stable Delta history
+    A->>B: read per-table commit checkpoints
+    A->>O: consume CDF after each checkpoint
+    A->>B: advance successful per-table positions
+
+    Note over A,B: analytics may fail or be delayed
+    S->>O: operational generation continues
+
+    A->>O: later consume remaining CDF backlog
+    A->>B: checkpoints catch up independently
+```
+
+A failed analytical run therefore does not stop operational generation, and analytics never needs to know the simulator's logical tick.
 ---
 
 # Bundle configuration — `databricks.yml`
 
-`databricks.yml` is the bundle entry point.
+The platform now has **three physically isolated deployment environments**, each with blue and green code slots:
 
-It defines:
+| Environment | Branch | Catalog | Workspace source | Runtime behavior |
+|---|---|---|---|---|
+| DEV | `dev` | `mro_dev` | GitHub Environment `dev` → `DATABRICKS_HOST` | ephemeral validation; schedules remain paused |
+| STAGING | `staging` | `mro_staging` | GitHub Environment `staging` → `DATABRICKS_HOST` | persistent rehearsal runtime |
+| PROD | `main` | `mro_prod` | GitHub Environment `prod` → `DATABRICKS_HOST` | persistent operational runtime |
 
-- bundle name: `mro-data-pipeline`;
-- resource includes: `resources/*.yml`;
-- schema variables;
-- a default `dev` target in development mode;
-- a `prod` target in production mode.
+Each environment has `<env>_blue` and `<env>_green` Bundle targets. All targets deploy schedules paused first. DEV records only the last validated slot; STAGING and PROD promote the candidate by switching schedules.
 
-The checked-in file intentionally does not contain credentials.
+Production additionally configures:
 
-For attended local development, authenticate the Databricks CLI with OAuth and select a CLI profile. For unattended CI/CD, prefer a service-principal/OAuth M2M configuration rather than storing user credentials in the repository.
+```yaml
+run_as:
+  service_principal_name: ${var.run_as_service_principal}
+```
+
+so scheduled production Jobs execute as a service principal rather than a developer identity. The bundle uses `engine: direct` because the managed Genie resource is deployed with the same bundle.
 
 ---
+
+# CI/CD
+
+The branch contract is:
+
+```text
+push dev     → DEV
+push staging → STAGING
+push main    → PROD
+```
+
+## CI — `.github/workflows/ci.yml`
+
+CI runs on pushes and pull requests for all three branches and validates:
+
+```text
+python -m compileall -q src tests
+bash -n scripts/cd/blue_green.sh
+pytest -q tests/architecture
+databricks bundle validate -t <all six targets>
+```
+
+The architecture tests include schema-evolution contracts, layer-boundary checks, semantic coverage, incremental-MERGE checks, process-mining assets, expectations/observability assets, Genie configuration, and deployment topology.
+
+## CD — `.github/workflows/cd.yml`
+
+Every delivery follows the same candidate-validation pattern:
+
+```text
+discover inactive blue/green slot
+        ↓
+validate + deploy candidate paused
+        ↓
+create isolated Unity Catalog catalog
+        ↓
+seed isolated simulator
+        ↓
+run full analytical pipeline
+        ↓
+Expectations + Process Mining + Observability + Quality Gate
+        ↓
+drop isolated catalog
+        ↓
+promote candidate
+```
+
+The integration catalog is named from the environment and GitHub run, for example:
+
+```text
+mro_ci_staging_<run_id>_<attempt>
+```
+
+and is removed with `databricks catalogs delete ... --force` even after the validation path completes. The smoke run therefore does not contaminate the stable DEV/STAGING/PROD catalogs.
+
+### DEV
+
+DEV has no persistent source-system state. Its candidate is fully validated inside the disposable integration catalog, then both schedules remain paused. The `deployment_active` tag records the last validated slot.
+
+### STAGING
+
+STAGING has its own workspace and `mro_staging` catalog. It behaves like production operationally: a candidate is validated in an isolated catalog and then promoted by schedule cutover. This makes staging the persistent rehearsal environment between `dev` and `main`.
+
+### PROD
+
+PROD has its own workspace and `mro_prod` catalog. Its normal operational source is persistent, but deployment smoke tests never mutate it: they use a disposable integration catalog instead. After successful validation, only the blue/green schedule ownership changes.
+
+### Authentication and identities
+
+GitHub CD uses OIDC workload identity federation:
+
+```text
+DATABRICKS_AUTH_TYPE=github-oidc
+DATABRICKS_HOST=<environment workspace>
+DATABRICKS_CLIENT_ID=<environment deployment service principal>
+DATABRICKS_WAREHOUSE_ID=<environment SQL warehouse>
+```
+
+Create GitHub Environments `dev`, `staging`, and `prod` with those variables. For PROD, `DATABRICKS_CLIENT_ID` is also passed as `run_as_service_principal`, so the deployed scheduled Jobs run under the production service principal.
+
+No PAT or OAuth client secret is committed to the repository.
+
+---
+
+# Platform hardening implemented
+
+## SCD Type 2
+
+Selected conformed dimensions are Type 2:
+
+```text
+gold.dim_supplier
+gold.dim_material
+gold.dim_asset
+```
+
+Their technical validity comes from source Delta commit metadata and includes `effective_from`, `effective_to`, `is_current`, `source_commit_version`, and `attr_hash`. Bronze preserves master-data versions rather than overwriting them. New facts bind to the current dimension version on first insert; later fact updates preserve the original SCD foreign key.
+
+`dim_warehouse` and `dim_cost_center` remain Type 1.
+
+## Incremental MERGE
+
+Selected Silver assets (`silver_master`, inventory movement/position) and the Gold facts/dimensions use Delta `MERGE`. The pipeline therefore no longer rebuilds every curated analytical table on each run. Current-state `fact_stock_position` merges on its natural position grain (`material_id + warehouse_id`), while event facts merge on their event/business keys.
+
+## Declarative expectations
+
+`08_expectations.py` stores rules as data-like definitions (`dataset`, `name`, `expr`, `action`) and executes them generically. Results are persisted to:
+
+```text
+ops.expectation_result
+```
+
+This deliberately keeps the existing Jobs + MERGE execution model. It follows the same separation-of-rules principle as declarative expectations without migrating the project to Lakeflow Declarative Pipelines solely for data-quality syntax.
+
+## Observability
+
+`09_observability.py` publishes:
+
+```text
+ops.asset_observation
+```
+
+with row counts, latest Delta commit timestamps, and freshness in minutes for Bronze, Silver, and Gold assets, plus semantic-registry coverage.
+
+## Schema evolution
+
+`contracts/schema_contracts.yml` defines additive-only contracts for critical operational sources and SCD2 output requirements. `tests/architecture/test_schema_evolution.py` validates those contracts against the checked-in source schemas and dimensional code.
+
+## Semantic consumption
+
+The ten metric views remain the governed semantic surface. `resources/mro_genie.yml` publishes them as data sources for an environment-specific Genie space with starter questions and instructions to prefer governed measures rather than ad-hoc recomputation.
+
+## Process mining
+
+`09_process_mining.py` derives:
+
+```text
+gold.process_event
+gold.process_case_summary
+gold.process_transition_summary
+```
+
+from the Bronze `entity_state_transition` log, including case IDs, event ordering, transition durations, case durations, current state, and transition-frequency summaries.
+
+
 
 # Prerequisites
 
@@ -1070,7 +1610,7 @@ From the repository root:
 
 ```bash
 databricks bundle validate \
-  -t dev \
+  -t dev_blue \
   -p <profile-name>
 ```
 
@@ -1078,7 +1618,7 @@ Useful inspection command:
 
 ```bash
 databricks bundle summary \
-  -t dev \
+  -t dev_blue \
   -p <profile-name>
 ```
 
@@ -1090,11 +1630,11 @@ Validation checks the bundle configuration before resources are deployed.
 
 ```bash
 databricks bundle deploy \
-  -t dev \
+  -t dev_blue \
   -p <profile-name>
 ```
 
-Deployment uploads the notebook sources and creates or updates the Databricks Job described by the bundle.
+Deployment uploads the notebook sources and creates or updates both Databricks Jobs described by the bundle.
 
 The development target uses Databricks' development deployment mode, so deployed resource names may receive a development prefix associated with the deploying identity.
 
@@ -1102,59 +1642,70 @@ The development target uses Databricks' development deployment mode, so deployed
 
 # Run
 
-Run the complete Job:
+Run the operational simulator independently:
 
 ```bash
 databricks bundle run \
-  -t dev \
+  -t dev_blue \
   -p <profile-name> \
-  mro_data_pipeline
+  mro_source_simulator
 ```
 
-Override Job-level parameters:
+Run the analytical pipeline independently:
 
 ```bash
 databricks bundle run \
-  -t dev \
+  -t dev_blue \
+  -p <profile-name> \
+  mro_analytics_pipeline
+```
+
+Accelerate one simulator invocation without changing the analytical schedule:
+
+```bash
+databricks bundle run \
+  -t dev_blue \
   -p <profile-name> \
   --params ticks_per_run=24,step_minutes=60 \
-  mro_data_pipeline
+  mro_source_simulator
 ```
 
-Bootstrap the simulator without advancing ticks:
+Bootstrap only the operational source:
 
 ```bash
 databricks bundle run \
-  -t dev \
+  -t dev_blue \
   -p <profile-name> \
   --params bootstrap_only=true \
-  mro_data_pipeline
+  mro_source_simulator
 ```
 
-Databricks CLI can also run only selected Job tasks. That is useful during development when validating one branch of the DAG rather than executing the whole workflow.
-
-For example, consult `databricks bundle run --help` for the `--only` syntax supported by your installed CLI version.
-
+The analytical Job has no simulator parameters because simulation and analytics are intentionally separate workloads.
 ---
 
 # Recommended first deployment sequence
 
-Do not debug the entire DAG at once on a new workspace.
+On a new workspace, validate the source and analytics sides separately.
 
-A safer progression is:
+First bootstrap and advance the operational source:
 
-```text
-1. simulate_mro
-2. bronze_ingest
-3. silver_master
-4. four domain Silver tasks
-5. gold_dimensions
-6. Gold fact tasks
-7. semantic_model
-8. quality_gate
+```mermaid
+flowchart LR
+    A["Deploy bundle"] --> B["Run mro_source_simulator<br/>bootstrap_only=true"]
+    B --> C["Run simulator normally"]
+    C --> D["Verify mro_sim.sim_state<br/>committed_tick > 0"]
 ```
 
-After each stage, inspect the created schema and a few representative records.
+Then validate the analytical pipeline:
+
+```mermaid
+flowchart LR
+    B["Bronze"] --> C["Silver master"]
+    C --> D["Domain Silver"]
+    D --> E["Gold dimensions & facts"]
+    E --> F["Semantic cubes"]
+    F --> G["Quality gate"]
+```
 
 Useful checks:
 
@@ -1164,28 +1715,28 @@ FROM `mro-data`.mro_sim.sim_state;
 ```
 
 ```sql
-SHOW TABLES IN `mro-data`.bronze;
+SHOW TABLES IN `mro-data`.bronze_dev;
 ```
 
 ```sql
-SHOW TABLES IN `mro-data`.silver;
+SHOW TABLES IN `mro-data`.silver_dev;
 ```
 
 ```sql
-SHOW TABLES IN `mro-data`.gold;
+SHOW TABLES IN `mro-data`.gold_dev;
 ```
 
 ```sql
-SHOW VIEWS IN `mro-data`.semantic;
+SHOW VIEWS IN `mro-data`.semantic_dev;
 ```
 
-The most important simulator acceptance test is that independent executions advance persisted state rather than restarting it:
+A key acceptance test is **independent progress**:
 
-```text
-run 1 → committed_tick = 1
-run 2 → committed_tick = 2
-run 3 → committed_tick = 3
-```
+1. run `mro_source_simulator` several times without running analytics;
+2. confirm operational tables and Delta history advance;
+3. run `mro_analytics_pipeline`;
+4. confirm Bronze advances its per-table CDC checkpoints;
+5. intentionally delay analytics again and verify operational generation remains unaffected.
 
 ---
 
@@ -1193,23 +1744,20 @@ run 3 → committed_tick = 3
 
 A practical local development loop is:
 
-```text
-edit notebook / YAML
-        ↓
-git diff
-        ↓
-databricks bundle validate
-        ↓
-databricks bundle deploy
-        ↓
-databricks bundle run
-        ↓
-inspect Delta objects / Job run
-        ↓
-git commit
+```mermaid
+flowchart LR
+    E["Edit notebook / YAML"]
+    D["git diff"]
+    V["databricks bundle validate"]
+    DEP["databricks bundle deploy"]
+    R["databricks bundle run"]
+    I["Inspect Delta objects / Job run"]
+    C["git commit"]
+
+    E --> D --> V --> DEP --> R --> I --> C
 ```
 
-For production CI/CD, replace the attended user login with a service principal and OAuth machine-to-machine authentication.
+For GitHub-hosted CI/CD, `cd.yml` chooses the inactive blue/green target automatically. DEV runs should use explicit temporary schema overrides; PROD targets use the persistent schemas defined in the bundle. The checked-in workflow uses a Databricks service principal through GitHub OIDC workload identity federation.
 
 ---
 
@@ -1337,7 +1885,7 @@ Check:
 Provide the Databricks CLI profile explicitly:
 
 ```bash
-databricks bundle validate -t dev -p <profile-name>
+databricks bundle validate -t dev_blue -p <profile-name>
 ```
 
 or configure a `workspace.host` / `workspace.profile` mapping for the target in `databricks.yml`.
@@ -1346,21 +1894,11 @@ Do not place secrets directly in the bundle YAML.
 
 ---
 
-# Production hardening opportunities
+# Current hardening status
 
-This project is intentionally educational, but its structure makes several next steps possible:
+The formerly planned hardening items are now represented in the bundle: SCD2, incremental MERGE, expectations, row-count/freshness observability, schema-evolution tests, Genie publication, three isolated environments, production service-principal execution, isolated-catalog integration tests, and process-mining models.
 
-- introduce SCD Type 2 behavior for selected conformed dimensions;
-- convert selected Silver/Gold tables to incremental `MERGE` pipelines;
-- add expectations / declarative data-quality tooling;
-- add row-count and freshness observability;
-- add schema-evolution tests;
-- publish semantic metrics to dashboards or Genie;
-- add CI validation for Python syntax and bundle configuration;
-- deploy `dev`, `staging`, and `prod` to separate workspaces/catalogs;
-- run production deployment with a service principal rather than a developer identity;
-- add automated integration tests against an isolated catalog/schema;
-- add process-mining models over `entity_state_transition`.
+The remaining work is primarily **runtime validation in the real Databricks workspaces** and operational tuning of privileges, warehouse sizing, freshness thresholds, and retention policies.
 
 ---
 
@@ -1378,19 +1916,16 @@ This project is intentionally educational, but its structure makes several next 
 
 The repository is best understood as four connected systems:
 
-```text
-Synthetic operational MRO system
-              │
-              ▼
-Incremental/replayable ingestion
-              │
-              ▼
-Normalized + dimensional analytics
-              │
-              ▼
-Governed semantic metrics
+```mermaid
+flowchart TD
+    SRC["Synthetic operational MRO system"]
+    ING["Incremental / replayable ingestion"]
+    ANA["Normalized + dimensional analytics"]
+    SEM["Governed semantic metrics"]
+
+    SRC --> ING --> ANA --> SEM
 ```
 
-with the entire execution graph deployed as code through a Databricks Bundle.
+with the operational and analytical workloads independently deployed as code through one Databricks Bundle.
 
-The project therefore provides both a realistic synthetic MRO dataset and a compact reference architecture for building, orchestrating, validating, and deploying a Databricks analytical workflow.
+The project therefore provides both a realistic synthetic MRO source system and a compact reference architecture in which source generation, data engineering, and semantic analytics have explicit ownership boundaries and independent execution lifecycles.

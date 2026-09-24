@@ -19,6 +19,7 @@ bronze_schema = _widget("bronze_schema", "bronze")
 silver_schema = _widget("silver_schema", "silver")
 gold_schema = _widget("gold_schema", "gold")
 semantic_schema = _widget("semantic_schema", "semantic")
+ops_schema = _widget("ops_schema", "ops")
 reconciliation_failure_threshold = int(_widget("reconciliation_failure_threshold", "3"))
 
 def q(identifier: str) -> str:
@@ -166,6 +167,25 @@ check(
     """,
 )
 
+
+for dimension, natural_key in (
+    ("dim_supplier", "supplier_id"),
+    ("dim_material", "material_id"),
+    ("dim_asset", "asset_id"),
+):
+    check(
+        f"{dimension}_single_current_version",
+        f"""
+        SELECT COUNT(*)
+        FROM (
+          SELECT {q(natural_key)}
+          FROM {fq(gold_schema, dimension)}
+          GROUP BY {q(natural_key)}
+          HAVING SUM(CASE WHEN is_current THEN 1 ELSE 0 END) <> 1
+        )
+        """,
+    )
+
 # Bronze owns source positions. A checkpoint may lag the source, but it may
 # never be ahead of the current Delta history.
 checkpoint_ahead = 0
@@ -303,6 +323,15 @@ if incorrect_cube_mappings:
     print(f"Incorrect fact->cube mappings: {incorrect_cube_mappings}")
 if missing_cubes:
     print(f"Missing metric views: {missing_cubes}")
+
+# Declarative expectations are evaluated in a dedicated task.
+latest_expectation_failures = spark.sql(f"""
+SELECT COUNT(*) FROM (
+  SELECT *,ROW_NUMBER() OVER(PARTITION BY dataset,expectation ORDER BY observed_at DESC) rn
+  FROM {fq(ops_schema, 'expectation_result')}
+) WHERE rn=1 AND action='fail' AND failed_rows>0
+""").first()[0]
+checks["declarative_expectations"] = {"actual": int(latest_expectation_failures), "expected": 0}
 
 # COMMAND ----------
 failures = {name: result for name, result in checks.items()

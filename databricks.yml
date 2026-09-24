@@ -1,6 +1,6 @@
 bundle:
   name: mro-data-platform
-
+  engine: direct
   deployment:
     lock:
       enabled: true
@@ -9,95 +9,150 @@ include:
   - resources/*.yml
 
 variables:
+  workspace_host:
+    description: Workspace URL injected by the GitHub Environment for the selected deployment environment.
+    default: https://example.invalid
+  warehouse_id:
+    description: SQL warehouse used by Genie.
+    default: 0000000000000000
+  run_as_service_principal:
+    description: Production run-as service-principal application ID.
+    default: 00000000-0000-0000-0000-000000000000
   catalog:
-    description: Unity Catalog catalog
-    default: mro-data
-
+    description: Environment-specific Unity Catalog catalog.
+    default: mro_dev
   deployment_environment:
-    description: Logical deployment environment (dev or prod)
     default: dev
-
   deployment_slot:
-    description: Blue/green deployment slot
     default: blue
-
   source_schema:
-    description: Runtime operational source schema
     default: mro_sim_dev_ephemeral
-
   bronze_schema:
-    description: Runtime Bronze CDC landing schema
-    default: bronze_dev_ephemeral
-
+    default: bronze
   silver_schema:
-    description: Runtime Silver conformed schema
-    default: silver_dev_ephemeral
-
+    default: silver
   gold_schema:
-    description: Runtime Gold dimensional schema
-    default: gold_dev_ephemeral
-
+    default: gold
   semantic_schema:
-    description: Runtime semantic metric-view schema
-    default: semantic_dev_ephemeral
+    default: semantic
+  ops_schema:
+    default: ops
 
 targets:
   dev_blue:
     git:
       branch: dev
+    workspace:
+      host: ${var.workspace_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     presets:
       trigger_pause_status: PAUSED
     variables:
       deployment_environment: dev
       deployment_slot: blue
-      catalog: mro-data
+      catalog: mro_dev
       source_schema: mro_sim_dev_ephemeral
-      bronze_schema: bronze_dev_ephemeral
-      silver_schema: silver_dev_ephemeral
-      gold_schema: gold_dev_ephemeral
-      semantic_schema: semantic_dev_ephemeral
+      bronze_schema: bronze
+      silver_schema: silver
+      gold_schema: gold
+      semantic_schema: semantic
+      ops_schema: ops
 
   dev_green:
     git:
       branch: dev
+    workspace:
+      host: ${var.workspace_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     presets:
       trigger_pause_status: PAUSED
     variables:
       deployment_environment: dev
       deployment_slot: green
-      catalog: mro-data
+      catalog: mro_dev
       source_schema: mro_sim_dev_ephemeral
-      bronze_schema: bronze_dev_ephemeral
-      silver_schema: silver_dev_ephemeral
-      gold_schema: gold_dev_ephemeral
-      semantic_schema: semantic_dev_ephemeral
+      bronze_schema: bronze
+      silver_schema: silver
+      gold_schema: gold
+      semantic_schema: semantic
+      ops_schema: ops
+
+  staging_blue:
+    git:
+      branch: staging
+    workspace:
+      host: ${var.workspace_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    presets:
+      trigger_pause_status: PAUSED
+    variables:
+      deployment_environment: staging
+      deployment_slot: blue
+      catalog: mro_staging
+      source_schema: mro_sim
+      bronze_schema: bronze
+      silver_schema: silver
+      gold_schema: gold
+      semantic_schema: semantic
+      ops_schema: ops
+
+  staging_green:
+    git:
+      branch: staging
+    workspace:
+      host: ${var.workspace_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    presets:
+      trigger_pause_status: PAUSED
+    variables:
+      deployment_environment: staging
+      deployment_slot: green
+      catalog: mro_staging
+      source_schema: mro_sim
+      bronze_schema: bronze
+      silver_schema: silver
+      gold_schema: gold
+      semantic_schema: semantic
+      ops_schema: ops
 
   prod_blue:
     git:
       branch: main
+    workspace:
+      host: ${var.workspace_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.run_as_service_principal}
     presets:
       trigger_pause_status: PAUSED
     variables:
       deployment_environment: prod
       deployment_slot: blue
-      catalog: mro-data
+      catalog: mro_prod
       source_schema: mro_sim
       bronze_schema: bronze
       silver_schema: silver
       gold_schema: gold
       semantic_schema: semantic
+      ops_schema: ops
 
   prod_green:
     git:
       branch: main
+    workspace:
+      host: ${var.workspace_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.run_as_service_principal}
     presets:
       trigger_pause_status: PAUSED
     variables:
       deployment_environment: prod
       deployment_slot: green
-      catalog: mro-data
+      catalog: mro_prod
       source_schema: mro_sim
       bronze_schema: bronze
       silver_schema: silver
       gold_schema: gold
       semantic_schema: semantic
+      ops_schema: ops
