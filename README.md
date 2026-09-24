@@ -13,7 +13,7 @@ The repository is also a **Job-as-Code** example: the operational simulator and 
 The project is intentionally designed as a compact laboratory for several data-platform concepts:
 
 - stateful synthetic operational-data generation;
-- incremental ingestion using a persisted logical watermark;
+- incremental ingestion using per-table Delta CDF checkpoints;
 - Delta Lake state and event persistence;
 - retry-friendly deterministic simulation;
 - medallion architecture responsibilities;
@@ -41,51 +41,34 @@ These domains are intentionally connected.
 A typical simulated business flow is:
 
 ```mermaid
-flowchart LR
-
-    subgraph MRO["1 - Maintenance and Inventory"]
-        direction TB
-        MD["Maintenance demand"] --> WO["Work order"]
-        WO --> MR["Material requirement"]
-
-        MR -->|available| ISSUE["Inventory issue"]
-        ISSUE --> EXEC["Maintenance execution"]
-
-        MR -->|shortage| SHORTAGE["Material shortage"]
-        WO -. scope withdrawn .-> WO_CANCEL["CANCELLED"]
-    end
-
-    subgraph PROC["2 - Procurement and Receiving"]
-        direction TB
-        PR["Purchase requisition"] --> PO["Purchase order"]
-        PO --> GR["Goods receipt"]
-        GR --> RESTOCK["Inventory replenished"]
-
-        PR -. approval denied .-> PR_REJECT["REJECTED"]
-        PO -. supplier failure .-> PO_CANCEL["CANCELLED"]
-    end
-
-    subgraph FIN["3 - Fiscal and Finance"]
-        direction TB
-        FI["Fiscal invoice"] --> VAL{"Validation"}
-
-        VAL -->|clean| POSTED["POSTED"]
-        VAL -->|exception| BLOCKED["BLOCKED"]
-        BLOCKED -->|resolved| RELEASED["RELEASED"]
-
-        POSTED --> AP["Accounts payable"]
-        RELEASED --> AP
-        AP --> PAY["Payment"]
-        AP -. reversal .-> VOIDED["VOIDED"]
-    end
-
-    SHORTAGE --> PR
-    GR --> FI
+graph LR
+    MD[Maintenance demand] --> WO[Work order]
+    WO --> MR[Material requirement]
+    MR --> ISSUE[Inventory issue]
+    MR --> SHORT[Material shortage]
+    ISSUE --> EXEC[Maintenance execution]
+    SHORT --> PR[Purchase requisition]
+    PR --> PO[Purchase order]
+    PO --> GR[Goods receipt]
+    GR --> STOCK[Inventory replenishment]
+    GR --> FI[Fiscal invoice]
+    FI --> VALID[Invoice validation]
+    VALID --> AP[Accounts payable]
+    AP --> PAY[Payment]
+    WO -.-> WOC[Cancelled]
+    PR -.-> PRR[Rejected]
+    VALID -.-> BLOCK[Blocked]
+    BLOCK --> REL[Released]
+    REL --> AP
+    AP -.-> VOID[Voided]
 ```
 
 The resulting data therefore contains useful causal relationships rather than independent synthetic records.
 
 ---
+
+<details>
+<summary><strong>Repository structure and asset inventory</strong></summary>
 
 ## Repository structure
 
@@ -143,13 +126,10 @@ The source tree follows the same architectural boundaries as the platform:
 The directory boundaries are intentional:
 
 ```mermaid
-flowchart LR
-    OP["src/operational<br/>Source-system behavior"]
-    DE["src/data_engineering<br/>Bronze · Silver · Gold · Quality"]
-    AN["src/analytics<br/>Semantic cubes"]
-
-    OP -->|"Delta CDF source interface"| DE
-    DE -->|"Gold facts & dimensions"| AN
+graph LR
+    OP[Operational source] --> CDF[Delta CDF]
+    CDF --> DE[Bronze Silver Gold]
+    DE --> AN[Semantic analytics]
 ```
 
 There is no direct Job dependency between `operational` and `data_engineering`. The analytical side observes independently committed source changes through Delta Change Data Feed.
@@ -186,6 +166,11 @@ There is no direct Job dependency between `operational` and `data_engineering`. 
 | `requirements-ci.txt` | Minimal Python dependencies used by GitHub Actions. |
 ---
 
+<details>
+<summary><strong>Databricks catalog layout and layer ownership</strong></summary>
+
+</details>
+
 ## Databricks catalog layout
 
 The default catalog is:
@@ -203,38 +188,26 @@ FROM `mro-data`.gold.fact_work_order;
 
 The notebooks already centralize identifier quoting, so the hyphenated catalog name is supported.
 
-The project creates or uses five schemas:
+The project creates or uses six schemas:
 
 ```mermaid
-flowchart LR
-
-    C["mro-data catalog"]
-
-    subgraph OP["Operational"]
-        direction TB
-        SRC["mro_sim"]
-    end
-
-    subgraph DE["Data Engineering"]
-        direction LR
-        B["bronze"] --> S["silver"] --> G["gold"]
-    end
-
-    subgraph AN["Analytics"]
-        direction TB
-        SEM["semantic"]
-    end
-
-    C --> SRC
-    SRC -. committed source state .-> B
-    G --> SEM
+graph LR
+    SRC[mro_sim] --> B[bronze]
+    B --> S[silver]
+    S --> G[gold]
+    G --> SEM[semantic]
+    G --> PM[process mining]
+    B --> OPS[ops]
+    S --> OPS
+    G --> OPS
 ```
 
 The diagram deliberately keeps node labels simple for broad Mermaid-renderer compatibility. The ownership is:
 
 - `mro_sim` — synthetic operational source;
 - `bronze → silver → gold` — data-engineering layers;
-- `semantic` — governed analytical cubes.
+- `semantic` — governed analytical cubes;
+- `ops` — persisted expectation and observability results.
 
 ### Layer responsibilities
 
@@ -247,6 +220,11 @@ The diagram deliberately keeps node labels simple for broad Mermaid-renderer com
 | Semantic | Define reusable business measures and dimensions over Gold. | Duplicate transformation logic that belongs in Silver/Gold. |
 
 ---
+
+<details>
+<summary><strong>1. Operational source simulator</strong></summary>
+
+</details>
 
 # 1. Operational source simulator — `src/operational/01_simulate_mro.py`
 
@@ -282,12 +260,9 @@ Its main concepts are:
 Example:
 
 ```mermaid
-flowchart LR
-    R1["Run 1<br/>committed_tick 0 → 1"]
-    R2["Run 2<br/>committed_tick 1 → 2"]
-    R3["Run 3<br/>committed_tick 2 → 3"]
-
-    R1 --> R2 --> R3
+graph LR
+    R1[Run 1 tick 0 to 1] --> R2[Run 2 tick 1 to 2]
+    R2 --> R3[Run 3 tick 2 to 3]
 ```
 
 With:
@@ -305,16 +280,10 @@ one tick represents one simulated hour.
 The analytical platform deliberately does **not** consume that tick.
 
 ```mermaid
-flowchart LR
-    T["Private simulation tick"]
-    OP["Operational persistence"]
-    CDF["Delta Change Data Feed"]
-    B["Bronze CDC ingestion"]
-
-    T --> OP
-    OP --> CDF
-    CDF --> B
-    T -. not an analytics watermark .-> B
+graph LR
+    T[Simulation tick] --> OP[Operational persistence]
+    OP --> CDF[Delta CDF]
+    CDF --> B[Bronze ingestion]
 ```
 
 The simulator may know a globally consistent logical step; downstream analytics behaves like an external consumer and only observes independently committed source changes.
@@ -325,11 +294,8 @@ The simulator uses deterministic IDs and a per-tick random seed derived from the
 Conceptually:
 
 ```mermaid
-flowchart LR
-    I["Same seed + same tick + same entity context"]
-    O["Same generated identity"]
-
-    I --> O
+graph LR
+    I[Same seed tick and entity context] --> O[Same generated identity]
 ```
 
 This makes replay/retry behavior substantially safer than generating new random identifiers on every Job attempt.
@@ -394,79 +360,53 @@ The exception semantics are domain-specific:
 ### Work order
 
 ```mermaid
-stateDiagram-v2
-    [*] --> PLANNED
-
-    PLANNED --> RELEASED: release
-    RELEASED --> WAITING_MATERIAL: shortage
-    RELEASED --> IN_PROGRESS: material available
-    WAITING_MATERIAL --> IN_PROGRESS: material fulfilled
-    IN_PROGRESS --> COMPLETED: work finished
-    COMPLETED --> CLOSED: administrative close
-
-    PLANNED --> CANCELLED: scope withdrawn
-    RELEASED --> CANCELLED: maintenance no longer required
-    WAITING_MATERIAL --> CANCELLED: demand withdrawn
-
-    CLOSED --> [*]
-    CANCELLED --> [*]
+graph TD
+    P[PLANNED] --> R[RELEASED]
+    R --> W[WAITING_MATERIAL]
+    R --> I[IN_PROGRESS]
+    W --> I
+    I --> C[COMPLETED]
+    C --> CL[CLOSED]
+    P --> X[CANCELLED]
+    R --> X
+    W --> X
 ```
 
 ### Work-order material
 
 ```mermaid
-stateDiagram-v2
-    [*] --> REQUESTED
-
-    REQUESTED --> PARTIALLY_ISSUED: partial stock issue
-    REQUESTED --> FULFILLED: full stock issue
-    PARTIALLY_ISSUED --> FULFILLED: remaining quantity issued
-
-    REQUESTED --> CANCELLED: parent work order cancelled
-    PARTIALLY_ISSUED --> CANCELLED: remaining demand withdrawn
-
-    FULFILLED --> [*]
-    CANCELLED --> [*]
+graph TD
+    R[REQUESTED] --> P[PARTIALLY_ISSUED]
+    R --> F[FULFILLED]
+    P --> F
+    R --> C[CANCELLED]
+    P --> C
 ```
 
 ### Purchase requisition
 
 ```mermaid
-stateDiagram-v2
-    [*] --> REQUESTED
-
-    REQUESTED --> APPROVED: approval granted
-    APPROVED --> ORDERED: purchase order created
-    ORDERED --> CLOSED: material fully received
-
-    REQUESTED --> REJECTED: approval denied
-    APPROVED --> CANCELLED: demand withdrawn
-    ORDERED --> CANCELLED: downstream purchase order cancelled
-
-    CLOSED --> [*]
-    REJECTED --> [*]
-    CANCELLED --> [*]
+graph TD
+    R[REQUESTED] --> A[APPROVED]
+    A --> O[ORDERED]
+    O --> C[CLOSED]
+    R --> X[REJECTED]
+    A --> Y[CANCELLED]
+    O --> Y
 ```
 
 ### Purchase order
 
 ```mermaid
-stateDiagram-v2
-    [*] --> APPROVED
-
-    APPROVED --> SENT: transmitted to supplier
-    SENT --> PARTIALLY_RECEIVED: partial delivery
-    PARTIALLY_RECEIVED --> PARTIALLY_RECEIVED: another partial delivery
-    SENT --> RECEIVED: full delivery
-    PARTIALLY_RECEIVED --> RECEIVED: remaining balance delivered
-    RECEIVED --> CLOSED: fiscal lifecycle completed
-
-    APPROVED --> CANCELLED: order withdrawn
-    SENT --> CANCELLED: supplier failure / cancellation
-    PARTIALLY_RECEIVED --> CANCELLED: remaining balance cancelled
-
-    CLOSED --> [*]
-    CANCELLED --> [*]
+graph TD
+    A[APPROVED] --> S[SENT]
+    S --> P[PARTIALLY_RECEIVED]
+    S --> R[RECEIVED]
+    P --> R
+    R --> C[CLOSED]
+    A --> X[CANCELLED]
+    S --> X
+    P --> X
 ```
 
 A PO may receive multiple partial receipts before becoming fully received.
@@ -474,14 +414,11 @@ A PO may receive multiple partial receipts before becoming fully received.
 ### Fiscal invoice
 
 ```mermaid
-stateDiagram-v2
-    [*] --> RECEIVED
-    RECEIVED --> VALIDATING
-    VALIDATING --> POSTED: validation succeeds
-    VALIDATING --> BLOCKED: exception found
-    BLOCKED --> RELEASED: exception resolved
-    POSTED --> [*]
-    RELEASED --> [*]
+graph TD
+    R[RECEIVED] --> V[VALIDATING]
+    V --> P[POSTED]
+    V --> B[BLOCKED]
+    B --> L[RELEASED]
 ```
 
 `POSTED` and `RELEASED` are the two terminal fiscal outcomes. `POSTED` represents the straight-through path, while `RELEASED` represents an invoice that was blocked and subsequently cleared through exception handling. Both outcomes may create an accounts-payable item; AP is a downstream financial workflow rather than another fiscal-invoice state.
@@ -489,17 +426,11 @@ stateDiagram-v2
 ### Accounts payable
 
 ```mermaid
-stateDiagram-v2
-    [*] --> OPEN
-
-    OPEN --> SCHEDULED: payment run
-    SCHEDULED --> PAID: payment executed
-
-    OPEN --> VOIDED: title reversed / cancelled
-    SCHEDULED --> VOIDED: scheduled payment reversed
-
-    PAID --> [*]
-    VOIDED --> [*]
+graph TD
+    O[OPEN] --> S[SCHEDULED]
+    S --> P[PAID]
+    O --> V[VOIDED]
+    S --> V
 ```
 
 ## Physical source tables
@@ -583,6 +514,11 @@ State-history views are also generated for versioned entities.
 
 ---
 
+<details>
+<summary><strong>2. Bronze CDC ingestion</strong></summary>
+
+</details>
+
 # 2. Bronze ingestion — `src/data_engineering/02_bronze_ingest.py`
 
 Bronze is a **CDC boundary**, not an extension of the simulator.
@@ -623,10 +559,10 @@ updated_at
 There is intentionally no global analytical watermark.
 
 ```mermaid
-flowchart LR
-    WO["work_order_state"] --> CP["Independent CDC checkpoints"]
-    IM["inventory_movement_store"] --> CP
-    PO["purchase_order_state"] --> CP
+graph LR
+    WO[work_order_state] --> CP[Per table CDC checkpoints]
+    IM[inventory_movement_store] --> CP
+    PO[purchase_order_state] --> CP
 ```
 
 ## Stability lag
@@ -693,8 +629,13 @@ ingestion_run
 reconciliation_check_state
 ```
 
-Bronze remains the physically incremental analytical layer. Silver and Gold remain deterministic rebuilds from the latest observed Bronze state for the current project scale.
+Bronze remains the CDC ingestion boundary. Selected Silver and Gold models publish incrementally with Delta `MERGE`, while models that benefit from deterministic recomputation can remain rebuild-oriented.
 ---
+
+<details>
+<summary><strong>3. Silver conformed layer</strong></summary>
+
+</details>
 
 # 3. Silver layer
 
@@ -832,6 +773,11 @@ Enrichment includes:
 
 ---
 
+<details>
+<summary><strong>4. Gold dimensional model</strong></summary>
+
+</details>
+
 # 4. Gold dimensional model
 
 Gold switches intentionally from operational modeling to analytical dimensional modeling.
@@ -924,6 +870,11 @@ Primary grains remain explicit: invoice, invoice item, payable title, and paymen
 
 ---
 
+<details>
+<summary><strong>5. Semantic layer and fact-to-cube coverage</strong></summary>
+
+</details>
+
 # 5. Semantic layer — `src/analytics/07_semantic_model.py`
 
 The semantic layer implements **analytical cubes as Unity Catalog metric views**.
@@ -937,31 +888,17 @@ This is deliberate. A metric view models one fact grain with reusable measures a
 ## Fact-to-cube coverage
 
 ```mermaid
-flowchart TB
-    subgraph MRO["Maintenance"]
-        FWO["gold.fact_work_order"] --> CWO["semantic.maintenance_metrics"]
-        FWOM["gold.fact_work_order_material"] --> CWOM["semantic.maintenance_material_metrics"]
-    end
-
-    subgraph INV["Inventory"]
-        FIM["gold.fact_inventory_movement"] --> CIM["semantic.inventory_metrics"]
-        FSP["gold.fact_stock_position"] --> CSP["semantic.inventory_position_metrics"]
-    end
-
-    subgraph PROC["Procurement & Receiving"]
-        FPO["gold.fact_purchase_order_item"] --> CPO["semantic.procurement_metrics"]
-        FGR["gold.fact_goods_receipt_item"] --> CGR["semantic.receiving_metrics"]
-    end
-
-    subgraph FISC["Fiscal"]
-        FFI["gold.fact_fiscal_invoice"] --> CFI["semantic.invoice_metrics"]
-        FFII["gold.fact_fiscal_invoice_item"] --> CFII["semantic.fiscal_item_metrics"]
-    end
-
-    subgraph FIN["Finance"]
-        FAP["gold.fact_accounts_payable"] --> CAP["semantic.payables_metrics"]
-        FPAY["gold.fact_payment"] --> CPAY["semantic.payment_metrics"]
-    end
+graph LR
+    FWO[fact_work_order] --> CWO[maintenance_metrics]
+    FWOM[fact_work_order_material] --> CWOM[maintenance_material_metrics]
+    FIM[fact_inventory_movement] --> CIM[inventory_metrics]
+    FSP[fact_stock_position] --> CSP[inventory_position_metrics]
+    FPO[fact_purchase_order_item] --> CPO[procurement_metrics]
+    FGR[fact_goods_receipt_item] --> CGR[receiving_metrics]
+    FFI[fact_fiscal_invoice] --> CFI[invoice_metrics]
+    FFII[fact_fiscal_invoice_item] --> CFII[fiscal_item_metrics]
+    FAP[fact_accounts_payable] --> CAP[payables_metrics]
+    FPAY[fact_payment] --> CPAY[payment_metrics]
 ```
 
 | Gold fact | Primary grain | Analytical cube |
@@ -1185,6 +1122,11 @@ If a future use case genuinely requires measures from multiple fact grains in on
 Metric views require Unity Catalog and a Databricks runtime / SQL environment that supports metric views.
 ---
 
+<details>
+<summary><strong>6. Quality gate</strong></summary>
+
+</details>
+
 # 6. Quality gate — `src/data_engineering/08_quality_gate.py`
 
 The final notebook is deliberately a **hard gate**, not a passive report.
@@ -1210,6 +1152,11 @@ This means a green Job run communicates more than "the notebooks executed". It a
 
 ---
 
+<details>
+<summary><strong>Independent Jobs and execution model</strong></summary>
+
+</details>
+
 # Independent Jobs
 
 The Bundle deploys **two independent Jobs**. Neither Job is a task of the other, and there is no `depends_on` relationship between them.
@@ -1217,12 +1164,14 @@ The Bundle deploys **two independent Jobs**. Neither Job is a task of the other,
 Their integration contract is:
 
 ```text
-mro_sim.sim_state.committed_tick
-        +
 persisted source Delta tables
+        +
+Delta Change Data Feed
         +
 bronze.ingestion_checkpoint
 ```
+
+The simulator's `committed_tick` remains private operational state and is not an analytical watermark.
 
 This models a real source/analytics boundary: operational activity can continue while analytics is delayed or failing, and analytics can catch up later from the committed source history.
 
@@ -1237,8 +1186,8 @@ resources/mro_simulator.job.yml
 The Job contains exactly one task:
 
 ```mermaid
-flowchart LR
-    SIM["simulate_mro<br/>src/operational/01_simulate_mro.py"]
+graph LR
+    J[mro-source-simulator] --> S[Operational Delta state]
 ```
 
 Its default schedule is every **10 minutes**, but the schedule ships paused:
@@ -1295,33 +1244,30 @@ resources/mro_analytics.job.yml
 The analytical DAG begins at Bronze—not at the simulator:
 
 ```mermaid
-flowchart TD
-    B["02 bronze_ingest"] --> C["03 silver_master"]
-
-    C --> D1["04 silver_mro"]
-    C --> D2["04 silver_stock"]
-    C --> D3["04 silver_procurement"]
-    C --> D4["04 silver_finance"]
-    C --> E["05 gold_dimensions"]
-
-    D1 --> F1["06 gold_mro"]
-    E --> F1
-
-    D2 --> F2["06 gold_stock"]
-    E --> F2
-
-    D3 --> F3["06 gold_procurement"]
-    E --> F3
-
-    D4 --> F4["06 gold_finance"]
-    E --> F4
-
-    F1 --> G["07 semantic_model"]
-    F2 --> G
-    F3 --> G
-    F4 --> G
-
-    G --> H["08 quality_gate"]
+graph TD
+    B[Bronze ingestion] --> M[Silver master]
+    M --> SM[Silver MRO]
+    M --> SS[Silver stock]
+    M --> SP[Silver procurement]
+    M --> SF[Silver finance]
+    M --> D[Gold dimensions]
+    SM --> FM[Gold MRO facts]
+    D --> FM
+    SS --> FS[Gold stock facts]
+    D --> FS
+    SP --> FP[Gold procurement facts]
+    D --> FP
+    SF --> FF[Gold finance facts]
+    D --> FF
+    FM --> SEM[Semantic metric views]
+    FS --> SEM
+    FP --> SEM
+    FF --> SEM
+    B --> PM[Process mining]
+    SEM --> EXP[Expectations]
+    PM --> EXP
+    EXP --> OBS[Observability]
+    OBS --> QG[Quality gate]
 ```
 
 Its default schedule is every **30 minutes**, also paused by default:
@@ -1361,29 +1307,21 @@ to avoid overlapping rebuilds and competing publication attempts.
 The operational and analytical Jobs have no orchestration dependency. Analytics only observes source commits that are available through Delta Change Data Feed.
 
 ```mermaid
-sequenceDiagram
-    participant S as mro-source-simulator
-    participant O as Operational Delta tables
-    participant A as mro-analytics-pipeline
-    participant B as Bronze checkpoints
-
-    S->>O: source commits advance independently
-    S->>O: more operational commits
-
-    A->>O: inspect stable Delta history
-    A->>B: read per-table commit checkpoints
-    A->>O: consume CDF after each checkpoint
-    A->>B: advance successful per-table positions
-
-    Note over A,B: analytics may fail or be delayed
-    S->>O: operational generation continues
-
-    A->>O: later consume remaining CDF backlog
-    A->>B: checkpoints catch up independently
+graph LR
+    SIM[Simulator] --> SRC[Operational Delta]
+    SRC --> CDF[Delta CDF]
+    CDF --> CP[Bronze checkpoints]
+    CP --> ANA[Analytical pipeline]
+    ANA --> QG[Quality gate]
 ```
 
 A failed analytical run therefore does not stop operational generation, and analytics never needs to know the simulator's logical tick.
 ---
+
+<details>
+<summary><strong>Bundle targets and environment isolation</strong></summary>
+
+</details>
 
 # Bundle configuration — `databricks.yml`
 
@@ -1407,6 +1345,11 @@ run_as:
 so scheduled production Jobs execute as a service principal rather than a developer identity. The bundle uses `engine: direct` because the managed Genie resource is deployed with the same bundle.
 
 ---
+
+<details>
+<summary><strong>CI/CD and blue-green delivery</strong></summary>
+
+</details>
 
 # CI/CD
 
@@ -1490,6 +1433,11 @@ No PAT or OAuth client secret is committed to the repository.
 
 ---
 
+<details>
+<summary><strong>Platform hardening: SCD2, MERGE, quality, observability, Genie, and process mining</strong></summary>
+
+</details>
+
 # Platform hardening implemented
 
 ## SCD Type 2
@@ -1551,6 +1499,11 @@ gold.process_transition_summary
 from the Bronze `entity_state_transition` log, including case IDs, event ordering, transition durations, case durations, current state, and transition-frequency summaries.
 
 
+
+<details>
+<summary><strong>Setup, authentication, deployment, and local workflow</strong></summary>
+
+</details>
 
 # Prerequisites
 
@@ -1690,21 +1643,24 @@ On a new workspace, validate the source and analytics sides separately.
 First bootstrap and advance the operational source:
 
 ```mermaid
-flowchart LR
-    A["Deploy bundle"] --> B["Run mro_source_simulator<br/>bootstrap_only=true"]
-    B --> C["Run simulator normally"]
-    C --> D["Verify mro_sim.sim_state<br/>committed_tick > 0"]
+graph LR
+    D[Deploy bundle] --> B[Bootstrap simulator]
+    B --> R[Run simulator]
+    R --> V[Verify persisted source state]
 ```
 
 Then validate the analytical pipeline:
 
 ```mermaid
-flowchart LR
-    B["Bronze"] --> C["Silver master"]
-    C --> D["Domain Silver"]
-    D --> E["Gold dimensions & facts"]
-    E --> F["Semantic cubes"]
-    F --> G["Quality gate"]
+graph LR
+    B[Bronze] --> S[Silver]
+    S --> G[Gold]
+    G --> M[Semantic metrics]
+    G --> P[Process mining]
+    M --> E[Expectations]
+    P --> E
+    E --> O[Observability]
+    O --> Q[Quality gate]
 ```
 
 Useful checks:
@@ -1745,21 +1701,23 @@ A key acceptance test is **independent progress**:
 A practical local development loop is:
 
 ```mermaid
-flowchart LR
-    E["Edit notebook / YAML"]
-    D["git diff"]
-    V["databricks bundle validate"]
-    DEP["databricks bundle deploy"]
-    R["databricks bundle run"]
-    I["Inspect Delta objects / Job run"]
-    C["git commit"]
-
-    E --> D --> V --> DEP --> R --> I --> C
+graph LR
+    E[Edit] --> D[Diff]
+    D --> V[Validate]
+    V --> DEP[Deploy]
+    DEP --> R[Run]
+    R --> I[Inspect]
+    I --> C[Commit]
 ```
 
 For GitHub-hosted CI/CD, `cd.yml` chooses the inactive blue/green target automatically. DEV runs should use explicit temporary schema overrides; PROD targets use the persistent schemas defined in the bundle. The checked-in workflow uses a Databricks service principal through GitHub OIDC workload identity federation.
 
 ---
+
+<details>
+<summary><strong>Architectural trade-offs</strong></summary>
+
+</details>
 
 # Architectural trade-offs
 
@@ -1769,22 +1727,11 @@ The operational volume is deliberately small compared with analytical workloads.
 
 The simulator makes state-machine decisions in Python and uses Spark/Delta for durable persistence and downstream processing. Distributing a handful of synthetic work orders across a Spark cluster would add complexity without useful realism.
 
-## Why Bronze is incremental but Silver/Gold rebuild today
+## Why incrementalization is selective
 
-For this dataset size, full deterministic Silver/Gold rebuilds are simpler to reason about and easier to validate.
+Bronze consumes source changes incrementally through Delta Change Data Feed. Selected Silver and Gold models also use Delta `MERGE`, while other transformations remain deterministic where a full recomputation is simpler and safer at the current scale.
 
-The current design therefore exercises a realistic incremental ingestion boundary without prematurely introducing watermark and merge state into every analytical model.
-
-If scale becomes meaningful, good candidates for incrementalization are:
-
-- `silver.inventory_movement`;
-- `silver.work_order_status_history`;
-- `gold.fact_inventory_movement`;
-- `gold.fact_goods_receipt_item`;
-- `gold.fact_fiscal_invoice_item`;
-- `gold.fact_payment`.
-
-Current-state/snapshot models require more care because updates can change an existing analytical row rather than simply append a new one.
+Event facts are natural incremental candidates because their business keys are stable. Current-state and snapshot models require more care because a later source change can update an existing analytical row rather than append a new one.
 
 ## Why semantic modeling is separate from Gold
 
@@ -1795,6 +1742,11 @@ The semantic layer defines business meaning over those models.
 Keeping them separate prevents a common failure mode where dimensional tables, aggregates, dashboard logic, and KPI definitions are all mixed into one "final" layer.
 
 ---
+
+<details>
+<summary><strong>Example analytical questions</strong></summary>
+
+</details>
 
 # Example analytical questions
 
@@ -1838,6 +1790,11 @@ The project is designed to support questions such as:
 These cross-domain questions are the main reason the source simulator models causal workflows instead of generating unrelated random tables.
 
 ---
+
+<details>
+<summary><strong>Troubleshooting</strong></summary>
+
+</details>
 
 # Troubleshooting
 
@@ -1894,6 +1851,8 @@ Do not place secrets directly in the bundle YAML.
 
 ---
 
+</details>
+
 # Current hardening status
 
 The formerly planned hardening items are now represented in the bundle: SCD2, incremental MERGE, expectations, row-count/freshness observability, schema-evolution tests, Genie publication, three isolated environments, production service-principal execution, isolated-catalog integration tests, and process-mining models.
@@ -1901,6 +1860,9 @@ The formerly planned hardening items are now represented in the bundle: SCD2, in
 The remaining work is primarily **runtime validation in the real Databricks workspaces** and operational tuning of privileges, warehouse sizing, freshness thresholds, and retention policies.
 
 ---
+
+<details>
+<summary><strong>Official Databricks references</strong></summary>
 
 # Official Databricks references
 
@@ -1912,18 +1874,17 @@ The remaining work is primarily **runtime validation in the real Databricks work
 
 ---
 
+</details>
+
 ## Summary
 
 The repository is best understood as four connected systems:
 
 ```mermaid
-flowchart TD
-    SRC["Synthetic operational MRO system"]
-    ING["Incremental / replayable ingestion"]
-    ANA["Normalized + dimensional analytics"]
-    SEM["Governed semantic metrics"]
-
-    SRC --> ING --> ANA --> SEM
+graph LR
+    SRC[Operational MRO] --> ING[Incremental ingestion]
+    ING --> ANA[Dimensional analytics]
+    ANA --> SEM[Governed semantic metrics]
 ```
 
 with the operational and analytical workloads independently deployed as code through one Databricks Bundle.
