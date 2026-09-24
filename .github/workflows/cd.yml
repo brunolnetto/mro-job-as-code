@@ -1,14 +1,14 @@
-name: CD Blue-Green
+name: CD
 
 on:
   push:
-    branches: [dev, staging, main]
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       environment:
         required: true
         type: choice
-        options: [dev, staging, prod]
+        options: [dev, prod]
       operation:
         required: true
         default: deploy
@@ -29,10 +29,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             case "$GITHUB_REF" in
               refs/heads/dev) environment=dev ;;
-              refs/heads/staging) environment=staging ;;
               refs/heads/main) environment=prod ;;
               *) exit 2 ;;
             esac
@@ -40,10 +40,20 @@ jobs:
           else
             environment='${{ inputs.environment }}'
             operation='${{ inputs.operation }}'
+
             expected_branch="$environment"
             [[ "$environment" == prod ]] && expected_branch=main
-            [[ "$GITHUB_REF" == "refs/heads/$expected_branch" ]] || { echo "$environment must deploy from $expected_branch" >&2; exit 1; }
+            [[ "$GITHUB_REF" == "refs/heads/$expected_branch" ]] || {
+              echo "$environment must deploy from $expected_branch" >&2
+              exit 1
+            }
+
+            if [[ "$operation" == rollback && "$environment" != prod ]]; then
+              echo "Rollback is only supported for PROD blue-green deployments" >&2
+              exit 1
+            fi
           fi
+
           echo "environment=$environment" >> "$GITHUB_OUTPUT"
           echo "operation=$operation" >> "$GITHUB_OUTPUT"
 
@@ -54,7 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12', cache: pip, cache-dependency-path: requirements-ci.txt}
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
       - run: python -m pip install -r requirements-ci.txt
       - run: python -m compileall -q src tests
       - run: bash -n scripts/cd/blue_green.sh
@@ -77,6 +90,7 @@ jobs:
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
       DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
@@ -90,12 +104,21 @@ jobs:
           : "${DATABRICKS_WAREHOUSE_ID:?GitHub Environment variable DATABRICKS_WAREHOUSE_ID is required}"
           databricks current-user me >/dev/null
 
-      - id: slots
-        name: Resolve blue-green slots
+      - id: target
+        name: Resolve deployment target
         shell: bash
         run: |
           set -euo pipefail
-          discovery="$(scripts/cd/blue_green.sh discover "$DELIVERY_ENV")"
+
+          if [[ "$DELIVERY_ENV" == dev ]]; then
+            echo "target=dev" >> "$GITHUB_OUTPUT"
+            echo "active_slot=none" >> "$GITHUB_OUTPUT"
+            echo "candidate_slot=ephemeral" >> "$GITHUB_OUTPUT"
+            echo "Resolved DEV target=dev"
+            exit 0
+          fi
+
+          discovery="$(scripts/cd/blue_green.sh discover prod)"
           eval "$discovery"
 
           case "${ACTIVE_SLOT:-}" in
@@ -108,62 +131,93 @@ jobs:
             *) echo "Invalid CANDIDATE_SLOT: ${CANDIDATE_SLOT:-<empty>}" >&2; exit 1 ;;
           esac
 
-          target="${DELIVERY_ENV}_${CANDIDATE_SLOT}"
+          target="prod_${CANDIDATE_SLOT}"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
           echo "active_slot=$ACTIVE_SLOT" >> "$GITHUB_OUTPUT"
           echo "candidate_slot=$CANDIDATE_SLOT" >> "$GITHUB_OUTPUT"
-          echo "target=$target" >> "$GITHUB_OUTPUT"
-          echo "Resolved active=$ACTIVE_SLOT candidate=$CANDIDATE_SLOT target=$target"
-      - name: Validate candidate bundle
+          echo "Resolved PROD active=$ACTIVE_SLOT candidate=$CANDIDATE_SLOT target=$target"
+
+      - name: Validate deployment bundle
         run: >-
-          databricks bundle validate -t '${{ steps.slots.outputs.target }}'
+          databricks bundle validate -t '${{ steps.target.outputs.target }}'
           --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"
           --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"
-      - name: Deploy inactive slot paused
+
+      - name: Deploy target paused
         run: >-
-          databricks bundle deploy -t '${{ steps.slots.outputs.target }}'
+          databricks bundle deploy -t '${{ steps.target.outputs.target }}'
           --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"
           --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"
           --auto-approve --fail-on-active-runs
-      - name: Assert candidate paused
-        run: scripts/cd/blue_green.sh assert-status "$DELIVERY_ENV" '${{ steps.slots.outputs.candidate_slot }}' PAUSED
+
+      - name: Assert deployed schedules paused
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$DELIVERY_ENV" == dev ]]; then
+            scripts/cd/blue_green.sh assert-status dev ephemeral PAUSED
+          else
+            scripts/cd/blue_green.sh assert-status prod '${{ steps.target.outputs.candidate_slot }}' PAUSED
+          fi
+
       - id: integration
         name: Create isolated integration catalog
         shell: bash
         run: |
+          set -euo pipefail
           name="mro_ci_${DELIVERY_ENV}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           name="${name//-/_}"
           databricks catalogs create "$name" --comment "Ephemeral MRO integration test catalog"
           echo "catalog=$name" >> "$GITHUB_OUTPUT"
+
       - name: Run isolated operational integration seed
+        shell: bash
         run: |
-          target='${{ steps.slots.outputs.target }}'
+          set -euo pipefail
+          target='${{ steps.target.outputs.target }}'
           c='${{ steps.integration.outputs.catalog }}'
-          databricks bundle run -t "$target" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,schema=mro_sim,bootstrap_only=true" mro_source_simulator
-          databricks bundle run -t "$target" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,schema=mro_sim,ticks_per_run=2,step_minutes=60" mro_source_simulator
+
+          databricks bundle run -t "$target"             --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"             --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"             --params "catalog=$c,schema=mro_sim,bootstrap_only=true"             mro_source_simulator
+
+          databricks bundle run -t "$target"             --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"             --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"             --params "catalog=$c,schema=mro_sim,ticks_per_run=2,step_minutes=60"             mro_source_simulator
+
       - name: Run isolated analytics integration test
+        shell: bash
         run: |
-          target='${{ steps.slots.outputs.target }}'
+          set -euo pipefail
+          target='${{ steps.target.outputs.target }}'
           c='${{ steps.integration.outputs.catalog }}'
-          databricks bundle run -t "$target" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,source_schema=mro_sim,bronze_schema=bronze,silver_schema=silver,gold_schema=gold,semantic_schema=semantic,ops_schema=ops,source_stability_lag_minutes=0,reconciliation_failure_threshold=1" mro_analytics_pipeline
+
+          databricks bundle run -t "$target"             --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"             --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"             --params "catalog=$c,source_schema=mro_sim,bronze_schema=bronze,silver_schema=silver,gold_schema=gold,semantic_schema=semantic,ops_schema=ops,source_stability_lag_minutes=0,reconciliation_failure_threshold=1"             mro_analytics_pipeline
+
       - name: Drop isolated integration catalog
         if: always() && steps.integration.outputs.catalog != ''
         run: databricks catalogs delete '${{ steps.integration.outputs.catalog }}' --force
-      - name: Promote candidate
-        run: scripts/cd/blue_green.sh promote "$DELIVERY_ENV" '${{ steps.slots.outputs.active_slot }}' '${{ steps.slots.outputs.candidate_slot }}'
+
+      - name: Finish DEV validation
+        if: needs.context.outputs.environment == 'dev'
+        run: echo "DEV validation complete; schedules remain PAUSED and integration data was discarded."
+
+      - name: Promote PROD candidate
+        if: needs.context.outputs.environment == 'prod'
+        run: >-
+          scripts/cd/blue_green.sh promote prod
+          '${{ steps.target.outputs.active_slot }}'
+          '${{ steps.target.outputs.candidate_slot }}'
 
   rollback:
     needs: context
     permissions:
       contents: read
       id-token: write
-    if: needs.context.outputs.operation == 'rollback'
+    if: needs.context.outputs.operation == 'rollback' && needs.context.outputs.environment == 'prod'
     runs-on: ubuntu-latest
-    environment: ${{ needs.context.outputs.environment }}
+    environment: prod
     env:
-      DELIVERY_ENV: ${{ needs.context.outputs.environment }}
       DATABRICKS_AUTH_TYPE: github-oidc
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
@@ -181,16 +235,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          discovery="$(scripts/cd/blue_green.sh discover "$DELIVERY_ENV")"
+          discovery="$(scripts/cd/blue_green.sh discover prod)"
           eval "$discovery"
+
           [[ "${ACTIVE_SLOT:-}" == blue || "${ACTIVE_SLOT:-}" == green ]] || {
-            echo "No valid active slot to roll back: ${ACTIVE_SLOT:-<empty>}" >&2
+            echo "No valid active PROD slot to roll back: ${ACTIVE_SLOT:-<empty>}" >&2
             exit 1
           }
+
           [[ "${CANDIDATE_SLOT:-}" == blue || "${CANDIDATE_SLOT:-}" == green ]] || {
-            echo "No valid previous slot to roll back: ${CANDIDATE_SLOT:-<empty>}" >&2
+            echo "No valid previous PROD slot to roll back: ${CANDIDATE_SLOT:-<empty>}" >&2
             exit 1
           }
+
           echo "active=$ACTIVE_SLOT" >> "$GITHUB_OUTPUT"
           echo "previous=$CANDIDATE_SLOT" >> "$GITHUB_OUTPUT"
-      - run: scripts/cd/blue_green.sh promote "$DELIVERY_ENV" '${{ steps.slots.outputs.active }}' '${{ steps.slots.outputs.previous }}'
+
+      - name: Roll back PROD
+        run: >-
+          scripts/cd/blue_green.sh promote prod
+          '${{ steps.slots.outputs.active }}'
+          '${{ steps.slots.outputs.previous }}'
