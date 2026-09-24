@@ -93,3 +93,14 @@ def test_deprecated_deploy_workflows_absent(repo_root: Path):
     wf=repo_root/'.github/workflows'
     assert not (wf/'deploy-dev.yml').exists()
     assert not (wf/'deploy-prod.yml').exists()
+
+
+def test_prod_deploy_and_rollback_share_concurrency_group(repo_root: Path):
+    text=read(repo_root,'cd.yml')
+    deploy=text.split('  deploy:',1)[1].split('  rollback:',1)[0]
+    rollback=text.split('  rollback:',1)[1]
+
+    assert 'group: mro-cd-${{ needs.context.outputs.environment }}' in deploy
+    assert 'cancel-in-progress: false' in deploy
+    assert 'group: mro-cd-prod' in rollback
+    assert 'cancel-in-progress: false' in rollback

@@ -173,20 +173,19 @@ There is no direct Job dependency between `operational` and `data_engineering`. 
 
 ## Databricks catalog layout
 
-The default catalog is:
+The default DEV catalog is:
 
 ```text
-mro-data
+mro_dev
 ```
 
-Because the catalog contains a hyphen, SQL references must quote it with backticks:
+Production uses:
 
-```sql
-SELECT *
-FROM `mro-data`.gold.fact_work_order;
+```text
+mro_prod
 ```
 
-The notebooks already centralize identifier quoting, so the hyphenated catalog name is supported.
+The bundle passes the environment-specific catalog explicitly to the notebooks. Identifiers are quoted centrally, so custom Unity Catalog names remain safe to reference.
 
 The project creates or uses six schemas:
 
@@ -1219,7 +1218,7 @@ because the simulator is a single logical writer advancing one persisted simulat
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `catalog` | `mro-data` | Unity Catalog catalog. |
+| `catalog` | `mro_dev` | DEV Unity Catalog catalog; PROD overrides this with `mro_prod`. |
 | `schema` | `mro_sim` | Operational source schema; populated from bundle variable `source_schema`. |
 | `start` | `2026-01-01T08:00:00-03:00` | Initial simulation timestamp. |
 | `step_minutes` | `60` | Simulated minutes per tick. |
@@ -1283,7 +1282,7 @@ At each invocation Bronze advances independent per-table Delta commit checkpoint
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `catalog` | `mro-data` | Unity Catalog catalog containing all project schemas. |
+| `catalog` | `mro_dev` | DEV Unity Catalog catalog; PROD overrides this with `mro_prod`. |
 | `source_schema` | `mro_sim` | Operational source schema. |
 | `bronze_schema` | `bronze` | Incremental ingestion schema. |
 | `silver_schema` | `silver` | Normalized/enriched domain schema. |
@@ -1808,22 +1807,17 @@ These cross-domain questions are the main reason the source simulator models cau
 
 # Troubleshooting
 
-## `Invalid catalog identifier: 'mro-data'`
+## Invalid catalog identifier
 
 Older revisions of the simulator used an overly strict identifier validator.
 
-The current code supports Unity Catalog names containing hyphens by quoting identifiers with backticks.
+The current DEV configuration uses `mro_dev`. If you choose a custom catalog name, the notebooks quote identifiers with backticks.
 
-Use:
-
-```sql
-`mro_dev`.mro_sim_dev_ephemeral.sim_state
-```
-
-not:
+Example:
 
 ```sql
-mro-data.mro_sim.sim_state
+SELECT *
+FROM `mro_dev`.mro_sim_dev_ephemeral.sim_state;
 ```
 
 ## `Compute ... does not exist`
