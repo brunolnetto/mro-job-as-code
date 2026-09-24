@@ -89,7 +89,8 @@ The source tree follows the same architectural boundaries as the platform:
 │   └── mro_genie.yml
 ├── scripts/
 │   └── cd/
-│       └── blue_green.sh
+│       ├── blue_green.sh
+│       └── decommission_staging.sh
 ├── tests/
 │   └── architecture/
 │       ├── conftest.py
