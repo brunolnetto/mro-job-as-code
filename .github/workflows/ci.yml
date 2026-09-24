@@ -46,10 +46,16 @@ jobs:
 
       - name: Validate all bundle targets structurally
         shell: bash
+        env:
+          # workspace.host is an authentication field and cannot use Bundle
+          # variable interpolation. A syntactically valid placeholder host is
+          # supplied through unified-auth environment variables for CI only.
+          DATABRICKS_HOST: https://example.invalid
+          DATABRICKS_AUTH_TYPE: pat
+          DATABRICKS_TOKEN: ci-structural-validation-placeholder
         run: |
           set -euo pipefail
           common=(
-            --var="workspace_host=https://example.invalid"
             --var="warehouse_id=0000000000000000"
             --var="run_as_service_principal=00000000-0000-0000-0000-000000000000"
           )
