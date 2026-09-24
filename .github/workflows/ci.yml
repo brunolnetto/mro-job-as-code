@@ -50,7 +50,7 @@ jobs:
           PY
 
       - name: Validate CD helper syntax
-        run: bash -n scripts/cd/blue_green.sh
+        run: bash -n scripts/cd/*.sh
 
       - name: Run architectural and schema-evolution tests
         run: pytest -q tests/architecture
