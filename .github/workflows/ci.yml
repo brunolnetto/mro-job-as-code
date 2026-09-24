@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,6 +18,12 @@ jobs:
   static-validation:
     name: Python, architecture, and bundle validation
     runs-on: ubuntu-latest
+    environment: dev
+
+    env:
+      DATABRICKS_AUTH_TYPE: github-oidc
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
 
     steps:
       - name: Check out repository
@@ -44,15 +51,8 @@ jobs:
       - name: Install Databricks CLI
         uses: databricks/setup-cli@main
 
-      - name: Validate all bundle targets structurally
+      - name: Validate all bundle targets against DEV workspace
         shell: bash
-        env:
-          # workspace.host is an authentication field and cannot use Bundle
-          # variable interpolation. A syntactically valid placeholder host is
-          # supplied through unified-auth environment variables for CI only.
-          DATABRICKS_HOST: https://example.invalid
-          DATABRICKS_AUTH_TYPE: pat
-          DATABRICKS_TOKEN: ci-structural-validation-placeholder
         run: |
           set -euo pipefail
           common=(
