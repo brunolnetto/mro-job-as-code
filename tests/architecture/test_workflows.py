@@ -12,7 +12,7 @@ def test_ci_is_fully_static_and_credential_free(repo_root: Path):
     assert 'python -m compileall' in text
     assert 'pytest -q tests/architecture' in text
     assert 'yaml.safe_load' in text
-    assert 'bash -n scripts/cd/*.sh' in text
+    assert 'bash -n scripts/cd/blue_green.sh' in text
 
     assert 'staging' not in text
     assert 'id-token: write' not in text
