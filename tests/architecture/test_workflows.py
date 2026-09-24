@@ -6,35 +6,29 @@ def read(repo_root: Path,name: str)->str:
 def test_only_ci_and_cd_exist(repo_root: Path):
     assert {p.name for p in (repo_root/'.github/workflows').glob('*.yml')}=={'ci.yml','cd.yml'}
 
-def test_ci_validates_python_tests_and_bundle(repo_root: Path):
+def test_ci_is_fully_static_and_credential_free(repo_root: Path):
     text=read(repo_root,'ci.yml')
     assert 'python -m compileall' in text
     assert 'pytest -q tests/architecture' in text
-    assert 'databricks/setup-cli' in text
-    assert 'databricks bundle validate' in text
-    for target in ('dev_blue','dev_green','staging_blue','staging_green','prod_blue','prod_green'):
-        assert target in text
+    assert 'yaml.safe_load' in text
+    assert 'bash -n scripts/cd/blue_green.sh' in text
+
+    assert 'id-token: write' not in text
+    assert 'environment: dev' not in text
+    assert 'DATABRICKS_HOST' not in text
+    assert 'DATABRICKS_CLIENT_ID' not in text
+    assert 'databricks/setup-cli' not in text
+    assert 'databricks bundle validate' not in text
 
 
-def test_ci_keeps_oidc_away_from_pull_request_code(repo_root: Path):
-    text=read(repo_root,'ci.yml')
-    workflow_permissions=text.split('jobs:',1)[0]
-    assert 'id-token: write' not in workflow_permissions
-
-    static=text.split('  static-validation:',1)[1].split('  bundle-validation:',1)[0]
-    assert 'id-token: write' not in static
-    assert 'environment: dev' not in static
-    assert 'DATABRICKS_HOST' not in static
-    assert 'DATABRICKS_CLIENT_ID' not in static
-    assert 'pytest -q tests/architecture' in static
-
-    authenticated=text.split('  bundle-validation:',1)[1]
-    assert "if: github.event_name == 'push'" in authenticated
-    assert 'environment: dev' in authenticated
-    assert 'id-token: write' in authenticated
-    assert 'DATABRICKS_AUTH_TYPE: github-oidc' in authenticated
-    assert 'pytest -q tests/architecture' not in authenticated
-    assert 'python -m compileall' not in authenticated
+def test_cd_fails_fast_on_auth_and_slot_resolution(repo_root: Path):
+    text=read(repo_root,'cd.yml')
+    assert 'databricks current-user me' in text
+    assert 'DATABRICKS_HOST:?GitHub Environment variable DATABRICKS_HOST is required' in text
+    assert 'DATABRICKS_CLIENT_ID:?GitHub Environment variable DATABRICKS_CLIENT_ID is required' in text
+    assert 'discovery="$(scripts/cd/blue_green.sh discover "$DELIVERY_ENV")"' in text
+    assert 'Invalid CANDIDATE_SLOT' in text
+    assert 'target="${DELIVERY_ENV}_${CANDIDATE_SLOT}"' in text
 
 def test_cd_routes_three_branches(repo_root: Path):
     text=read(repo_root,'cd.yml')
