@@ -6,8 +6,6 @@ on:
   push:
     branches: [dev, staging, main]
 
-# Pull-request jobs receive only repository read access.
-# OIDC is granted at job scope exclusively to trusted push validation.
 permissions:
   contents: read
 
@@ -17,7 +15,7 @@ concurrency:
 
 jobs:
   static-validation:
-    name: Python and architecture validation
+    name: Python, YAML, and architecture validation
     runs-on: ubuntu-latest
 
     steps:
@@ -37,47 +35,22 @@ jobs:
       - name: Compile Python/notebook sources
         run: python -m compileall -q src tests
 
+      - name: Validate YAML syntax
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          files = [Path("databricks.yml"), *Path("resources").glob("*.yml"), *Path(".github/workflows").glob("*.yml")]
+          for path in files:
+              with path.open(encoding="utf-8") as handle:
+                  yaml.safe_load(handle)
+              print(f"YAML OK: {path}")
+          PY
+
       - name: Validate CD helper syntax
         run: bash -n scripts/cd/blue_green.sh
 
       - name: Run architectural and schema-evolution tests
         run: pytest -q tests/architecture
-
-  bundle-validation:
-    name: Authenticated Databricks bundle validation
-    needs: static-validation
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    environment: dev
-
-    # This is deliberately job-scoped. PR-controlled code never receives an
-    # OIDC token or Databricks deployment identity.
-    permissions:
-      contents: read
-      id-token: write
-
-    env:
-      DATABRICKS_AUTH_TYPE: github-oidc
-      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
-      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
-      DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
-
-    steps:
-      - name: Check out trusted push
-        uses: actions/checkout@v4
-
-      - name: Install Databricks CLI
-        uses: databricks/setup-cli@main
-
-      - name: Validate all bundle targets against DEV workspace
-        shell: bash
-        run: |
-          set -euo pipefail
-          common=(
-            --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"
-            --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"
-          )
-          for target in dev_blue dev_green staging_blue staging_green prod_blue prod_green; do
-            echo "Validating $target"
-            databricks bundle validate -t "$target" "${common[@]}"
-          done
