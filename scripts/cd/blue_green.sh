@@ -54,24 +54,115 @@ assert_slot_status(){ local a; a="$(slot_schedule_status "$1" "$2")"; [[ "$a" ==
 
 # DEV has no persistent runtime. The active marker means "last validated".
 discover_dev(){
-  local b g; b="$(slot_marker_status dev blue)"; g="$(slot_marker_status dev green)"
-  if [[ "$b" == ACTIVE && "$g" == ACTIVE ]]; then echo 'Both DEV slots active' >&2; return 1; fi
-  if [[ "$b" == ACTIVE ]]; then echo 'ACTIVE_SLOT=blue'; echo 'CANDIDATE_SLOT=green'
-  elif [[ "$g" == ACTIVE ]]; then echo 'ACTIVE_SLOT=green'; echo 'CANDIDATE_SLOT=blue'
-  else echo 'ACTIVE_SLOT=none'; echo 'CANDIDATE_SLOT=blue'; fi
+  local b g
+  b="$(slot_marker_status dev blue)"
+  g="$(slot_marker_status dev green)"
+
+  case "$b/$g" in
+    ACTIVE/INACTIVE|ACTIVE/MISSING)
+      echo 'ACTIVE_SLOT=blue'
+      echo 'CANDIDATE_SLOT=green'
+      ;;
+    INACTIVE/ACTIVE|MISSING/ACTIVE)
+      echo 'ACTIVE_SLOT=green'
+      echo 'CANDIDATE_SLOT=blue'
+      ;;
+    INACTIVE/INACTIVE|MISSING/MISSING)
+      echo 'ACTIVE_SLOT=none'
+      echo 'CANDIDATE_SLOT=blue'
+      ;;
+    ACTIVE/ACTIVE)
+      echo 'Both DEV slots active' >&2
+      return 1
+      ;;
+    *)
+      echo "Ambiguous DEV blue/green marker state: blue=$b green=$g" >&2
+      return 1
+      ;;
+  esac
 }
 # STAGING and PROD are persistent runtimes. Active means UNPAUSED schedules.
 discover_runtime(){
-  local env="$1" b g; b="$(slot_schedule_status "$env" blue)"; g="$(slot_schedule_status "$env" green)"
-  if [[ "$b" == UNPAUSED && "$g" == UNPAUSED ]]; then echo "Both $env slots active" >&2; return 1; fi
-  if [[ "$b" == UNPAUSED ]]; then echo 'ACTIVE_SLOT=blue'; echo 'CANDIDATE_SLOT=green'
-  elif [[ "$g" == UNPAUSED ]]; then echo 'ACTIVE_SLOT=green'; echo 'CANDIDATE_SLOT=blue'
-  elif [[ "$b" == MISSING && "$g" == MISSING ]]; then echo 'ACTIVE_SLOT=none'; echo 'CANDIDATE_SLOT=blue'
-  elif [[ "$b" == PAUSED && "$g" == MISSING ]]; then echo 'ACTIVE_SLOT=none'; echo 'CANDIDATE_SLOT=blue'
-  elif [[ "$g" == PAUSED && "$b" == MISSING ]]; then echo 'ACTIVE_SLOT=none'; echo 'CANDIDATE_SLOT=green'
-  else echo "Ambiguous $env blue/green state: blue=$b green=$g" >&2; return 1; fi
+  local env="$1" b g bm gm
+  b="$(slot_schedule_status "$env" blue)"
+  g="$(slot_schedule_status "$env" green)"
+
+  # Any inconsistent schedule observation is fatal. Never select a candidate
+  # from a partially known runtime state.
+  if [[ "$b" == INCONSISTENT || "$g" == INCONSISTENT ]]; then
+    echo "Inconsistent $env blue/green schedule state: blue=$b green=$g" >&2
+    return 1
+  fi
+
+  case "$b/$g" in
+    UNPAUSED/PAUSED|UNPAUSED/MISSING)
+      echo 'ACTIVE_SLOT=blue'
+      echo 'CANDIDATE_SLOT=green'
+      ;;
+    PAUSED/UNPAUSED|MISSING/UNPAUSED)
+      echo 'ACTIVE_SLOT=green'
+      echo 'CANDIDATE_SLOT=blue'
+      ;;
+    MISSING/MISSING)
+      echo 'ACTIVE_SLOT=none'
+      echo 'CANDIDATE_SLOT=blue'
+      ;;
+    PAUSED/MISSING)
+      echo 'ACTIVE_SLOT=none'
+      echo 'CANDIDATE_SLOT=blue'
+      ;;
+    MISSING/PAUSED)
+      echo 'ACTIVE_SLOT=none'
+      echo 'CANDIDATE_SLOT=green'
+      ;;
+    PAUSED/PAUSED)
+      # Both schedule reads proved that both slots exist. Marker lookups must
+      # therefore return ACTIVE or INACTIVE. MISSING now means lookup failure
+      # or state loss, not "slot absent", and must fail closed.
+      bm="$(slot_marker_status "$env" blue)"
+      gm="$(slot_marker_status "$env" green)"
+
+      if [[ "$bm" == MISSING || "$gm" == MISSING ||
+            "$bm" == INCONSISTENT || "$gm" == INCONSISTENT ]]; then
+        echo "Uncertain $env deployment markers while both schedules are paused: blue=$bm green=$gm" >&2
+        return 1
+      fi
+
+      case "$bm/$gm" in
+        ACTIVE/INACTIVE)
+          echo 'ACTIVE_SLOT=blue'
+          echo 'CANDIDATE_SLOT=green'
+          ;;
+        INACTIVE/ACTIVE)
+          echo 'ACTIVE_SLOT=green'
+          echo 'CANDIDATE_SLOT=blue'
+          ;;
+        INACTIVE/INACTIVE)
+          echo 'ACTIVE_SLOT=none'
+          echo 'CANDIDATE_SLOT=blue'
+          ;;
+        ACTIVE/ACTIVE)
+          echo "Both $env slots carry deployment_active=true while both schedules are paused" >&2
+          return 1
+          ;;
+        *)
+          echo "Ambiguous $env deployment markers while both schedules are paused: blue=$bm green=$gm" >&2
+          return 1
+          ;;
+      esac
+      ;;
+    UNPAUSED/UNPAUSED)
+      echo "Both $env slots active" >&2
+      return 1
+      ;;
+    *)
+      echo "Ambiguous $env blue/green schedule state: blue=$b green=$g" >&2
+      return 1
+      ;;
+  esac
 }
-discover(){ case "$1" in dev) discover_dev;; staging|prod) discover_runtime "$1";; *) return 2;; esac; }
+
+discover(){ case "$1" in dev) discover_dev;; staging|prod) discover_runtime "$1";; *) echo "Unknown environment: $1" >&2; return 2;; esac; }
 
 promote_dev(){
   local active="$1" candidate="$2"

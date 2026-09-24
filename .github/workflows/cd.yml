@@ -17,7 +17,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   context:
@@ -63,6 +62,9 @@ jobs:
 
   deploy:
     needs: [context, validate]
+    permissions:
+      contents: read
+      id-token: write
     if: needs.context.outputs.operation == 'deploy'
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.environment }}
@@ -78,13 +80,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
-      - id: slots
+
+      - name: Verify Databricks authentication
         shell: bash
         run: |
-          eval "$(scripts/cd/blue_green.sh discover "$DELIVERY_ENV")"
+          set -euo pipefail
+          : "${DATABRICKS_HOST:?GitHub Environment variable DATABRICKS_HOST is required}"
+          : "${DATABRICKS_CLIENT_ID:?GitHub Environment variable DATABRICKS_CLIENT_ID is required}"
+          : "${DATABRICKS_WAREHOUSE_ID:?GitHub Environment variable DATABRICKS_WAREHOUSE_ID is required}"
+          databricks current-user me >/dev/null
+
+      - id: slots
+        name: Resolve blue-green slots
+        shell: bash
+        run: |
+          set -euo pipefail
+          discovery="$(scripts/cd/blue_green.sh discover "$DELIVERY_ENV")"
+          eval "$discovery"
+
+          case "${ACTIVE_SLOT:-}" in
+            none|blue|green) ;;
+            *) echo "Invalid ACTIVE_SLOT: ${ACTIVE_SLOT:-<empty>}" >&2; exit 1 ;;
+          esac
+
+          case "${CANDIDATE_SLOT:-}" in
+            blue|green) ;;
+            *) echo "Invalid CANDIDATE_SLOT: ${CANDIDATE_SLOT:-<empty>}" >&2; exit 1 ;;
+          esac
+
+          target="${DELIVERY_ENV}_${CANDIDATE_SLOT}"
           echo "active_slot=$ACTIVE_SLOT" >> "$GITHUB_OUTPUT"
           echo "candidate_slot=$CANDIDATE_SLOT" >> "$GITHUB_OUTPUT"
-          echo "target=${DELIVERY_ENV}_${CANDIDATE_SLOT}" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "Resolved active=$ACTIVE_SLOT candidate=$CANDIDATE_SLOT target=$target"
       - name: Validate candidate bundle
         run: >-
           databricks bundle validate -t '${{ steps.slots.outputs.target }}'
@@ -125,6 +153,9 @@ jobs:
 
   rollback:
     needs: context
+    permissions:
+      contents: read
+      id-token: write
     if: needs.context.outputs.operation == 'rollback'
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.environment }}
@@ -136,11 +167,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
-      - id: slots
+
+      - name: Verify Databricks authentication
         shell: bash
         run: |
-          eval "$(scripts/cd/blue_green.sh discover "$DELIVERY_ENV")"
-          [[ "$ACTIVE_SLOT" != none ]] || { echo 'No active slot to roll back' >&2; exit 1; }
+          set -euo pipefail
+          : "${DATABRICKS_HOST:?GitHub Environment variable DATABRICKS_HOST is required}"
+          : "${DATABRICKS_CLIENT_ID:?GitHub Environment variable DATABRICKS_CLIENT_ID is required}"
+          databricks current-user me >/dev/null
+
+      - id: slots
+        name: Resolve rollback slots
+        shell: bash
+        run: |
+          set -euo pipefail
+          discovery="$(scripts/cd/blue_green.sh discover "$DELIVERY_ENV")"
+          eval "$discovery"
+          [[ "${ACTIVE_SLOT:-}" == blue || "${ACTIVE_SLOT:-}" == green ]] || {
+            echo "No valid active slot to roll back: ${ACTIVE_SLOT:-<empty>}" >&2
+            exit 1
+          }
+          [[ "${CANDIDATE_SLOT:-}" == blue || "${CANDIDATE_SLOT:-}" == green ]] || {
+            echo "No valid previous slot to roll back: ${CANDIDATE_SLOT:-<empty>}" >&2
+            exit 1
+          }
           echo "active=$ACTIVE_SLOT" >> "$GITHUB_OUTPUT"
           echo "previous=$CANDIDATE_SLOT" >> "$GITHUB_OUTPUT"
       - run: scripts/cd/blue_green.sh promote "$DELIVERY_ENV" '${{ steps.slots.outputs.active }}' '${{ steps.slots.outputs.previous }}'
