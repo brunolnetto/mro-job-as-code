@@ -10,7 +10,7 @@ resources:
       tags:
         deployment_environment: ${var.deployment_environment}
         deployment_slot: ${var.deployment_slot}
-        deployment_strategy: blue-green
+        deployment_strategy: ${var.deployment_strategy}
       max_concurrent_runs: 1
       queue:
         enabled: true

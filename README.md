@@ -159,17 +159,17 @@ There is no direct Job dependency between `operational` and `data_engineering`. 
 | `src/data_engineering/08_expectations.py` | Declarative data-quality rule catalog and generic expectation runner. |
 | `src/data_engineering/09_observability.py` | Row-count and Delta freshness observations persisted in the ops schema. |
 | `src/data_engineering/08_quality_gate.py` | Cross-layer publication contract, including semantic fact/cube coverage. |
-| `.github/workflows/ci.yml` | Python, architectural, schema-evolution, and Databricks Bundle validation. |
-| `.github/workflows/cd.yml` | Unified DEV/STAGING/PROD blue-green delivery with isolated catalog integration tests. |
-| `scripts/cd/blue_green.sh` | Discovers active slots and performs safe schedule cutover/rollback without redeploying the active slot. |
+| `.github/workflows/ci.yml` | Credential-free Python, YAML, Bash, architectural, and schema-evolution validation. |
+| `.github/workflows/cd.yml` | DEV ephemeral validation plus PROD blue-green delivery with isolated catalog integration tests. |
+| `scripts/cd/blue_green.sh` | PROD-only blue-green discovery, cutover, and rollback helper. |
 | `tests/architecture/` | Executable architectural contracts for bundle structure, layer boundaries, Job DAGs, and semantic coverage. |
 | `requirements-ci.txt` | Minimal Python dependencies used by GitHub Actions. |
 ---
 
+</details>
+
 <details>
 <summary><strong>Databricks catalog layout and layer ownership</strong></summary>
-
-</details>
 
 ## Databricks catalog layout
 
@@ -221,10 +221,10 @@ The diagram deliberately keeps node labels simple for broad Mermaid-renderer com
 
 ---
 
+</details>
+
 <details>
 <summary><strong>1. Operational source simulator</strong></summary>
-
-</details>
 
 # 1. Operational source simulator — `src/operational/01_simulate_mro.py`
 
@@ -355,7 +355,6 @@ The exception semantics are domain-specific:
 - purchase orders can be `CANCELLED`;
 - fiscal validation uses `BLOCKED → RELEASED` as its unhappy-but-resolved route and still has only the two terminal outcomes `POSTED` and `RELEASED`;
 - accounts-payable titles can be `VOIDED`.
-
 
 ### Work order
 
@@ -514,10 +513,10 @@ State-history views are also generated for versioned entities.
 
 ---
 
+</details>
+
 <details>
 <summary><strong>2. Bronze CDC ingestion</strong></summary>
-
-</details>
 
 # 2. Bronze ingestion — `src/data_engineering/02_bronze_ingest.py`
 
@@ -632,10 +631,10 @@ reconciliation_check_state
 Bronze remains the CDC ingestion boundary. Selected Silver and Gold models publish incrementally with Delta `MERGE`, while models that benefit from deterministic recomputation can remain rebuild-oriented.
 ---
 
+</details>
+
 <details>
 <summary><strong>3. Silver conformed layer</strong></summary>
-
-</details>
 
 # 3. Silver layer
 
@@ -773,10 +772,10 @@ Enrichment includes:
 
 ---
 
+</details>
+
 <details>
 <summary><strong>4. Gold dimensional model</strong></summary>
-
-</details>
 
 # 4. Gold dimensional model
 
@@ -870,10 +869,10 @@ Primary grains remain explicit: invoice, invoice item, payable title, and paymen
 
 ---
 
+</details>
+
 <details>
 <summary><strong>5. Semantic layer and fact-to-cube coverage</strong></summary>
-
-</details>
 
 # 5. Semantic layer — `src/analytics/07_semantic_model.py`
 
@@ -1122,10 +1121,10 @@ If a future use case genuinely requires measures from multiple fact grains in on
 Metric views require Unity Catalog and a Databricks runtime / SQL environment that supports metric views.
 ---
 
+</details>
+
 <details>
 <summary><strong>6. Quality gate</strong></summary>
-
-</details>
 
 # 6. Quality gate — `src/data_engineering/08_quality_gate.py`
 
@@ -1152,10 +1151,10 @@ This means a green Job run communicates more than "the notebooks executed". It a
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Independent Jobs and execution model</strong></summary>
-
-</details>
 
 # Independent Jobs
 
@@ -1318,22 +1317,23 @@ graph LR
 A failed analytical run therefore does not stop operational generation, and analytics never needs to know the simulator's logical tick.
 ---
 
+</details>
+
 <details>
 <summary><strong>Bundle targets and environment isolation</strong></summary>
 
-</details>
-
 # Bundle configuration — `databricks.yml`
 
-The platform now has **three physically isolated deployment environments**, each with blue and green code slots:
+The platform has **two deployment environments with different lifecycles**:
 
-| Environment | Branch | Catalog | Workspace source | Runtime behavior |
+| Environment | Branch | Bundle target(s) | Data lifecycle | Runtime behavior |
 |---|---|---|---|---|
-| DEV | `dev` | `mro_dev` | GitHub Environment `dev` → `DATABRICKS_HOST` | ephemeral validation; schedules remain paused |
-| STAGING | `staging` | `mro_staging` | GitHub Environment `staging` → `DATABRICKS_HOST` | persistent rehearsal runtime |
-| PROD | `main` | `mro_prod` | GitHub Environment `prod` → `DATABRICKS_HOST` | persistent operational runtime |
+| DEV | `dev` | `dev` | ephemeral integration catalog | validation only; schedules remain paused |
+| PROD | `main` | `prod_blue`, `prod_green` | persistent `mro_prod` catalog | blue-green operational runtime |
 
-Each environment has `<env>_blue` and `<env>_green` Bundle targets. All targets deploy schedules paused first. DEV records only the last validated slot; STAGING and PROD promote the candidate by switching schedules.
+DEV deliberately has no blue-green slots. A push to `dev` deploys the single `dev` target, validates the complete platform against a disposable Unity Catalog catalog, drops that catalog, and leaves the deployed schedules paused.
+
+PROD keeps two slots. The inactive slot is deployed paused, validated against a disposable integration catalog, then promoted by schedule cutover only after successful validation.
 
 Production additionally configures:
 
@@ -1346,42 +1346,41 @@ so scheduled production Jobs execute as a service principal rather than a develo
 
 ---
 
-<details>
-<summary><strong>CI/CD and blue-green delivery</strong></summary>
-
 </details>
+
+<details>
+<summary><strong>CI/CD: ephemeral DEV and blue-green PROD</strong></summary>
 
 # CI/CD
 
 The branch contract is:
 
 ```text
-push dev     → DEV
-push staging → STAGING
-push main    → PROD
+push dev  → DEV ephemeral validation
+push main → PROD blue-green deployment
 ```
 
 ## CI — `.github/workflows/ci.yml`
 
-CI runs on pushes and pull requests for all three branches and validates:
+CI runs on pushes and pull requests for `dev` and `main` and stays credential-free:
 
 ```text
 python -m compileall -q src tests
+YAML parse validation
 bash -n scripts/cd/blue_green.sh
 pytest -q tests/architecture
-databricks bundle validate -t <all six targets>
 ```
 
 The architecture tests include schema-evolution contracts, layer-boundary checks, semantic coverage, incremental-MERGE checks, process-mining assets, expectations/observability assets, Genie configuration, and deployment topology.
 
 ## CD — `.github/workflows/cd.yml`
 
-Every delivery follows the same candidate-validation pattern:
+DEV and PROD intentionally use different delivery lifecycles.
+
+DEV:
 
 ```text
-discover inactive blue/green slot
-        ↓
-validate + deploy candidate paused
+deploy target dev paused
         ↓
 create isolated Unity Catalog catalog
         ↓
@@ -1393,28 +1392,41 @@ Expectations + Process Mining + Observability + Quality Gate
         ↓
 drop isolated catalog
         ↓
-promote candidate
+finish with schedules PAUSED
+```
+
+PROD:
+
+```text
+discover inactive blue-green slot
+        ↓
+deploy candidate paused
+        ↓
+create isolated Unity Catalog catalog
+        ↓
+run the same end-to-end integration validation
+        ↓
+drop isolated catalog
+        ↓
+promote candidate by schedule cutover
 ```
 
 The integration catalog is named from the environment and GitHub run, for example:
 
 ```text
-mro_ci_staging_<run_id>_<attempt>
+mro_ci_dev_<run_id>_<attempt>
+mro_ci_prod_<run_id>_<attempt>
 ```
 
-and is removed with `databricks catalogs delete ... --force` even after the validation path completes. The smoke run therefore does not contaminate the stable DEV/STAGING/PROD catalogs.
+and is removed with `databricks catalogs delete ... --force`, so deployment validation never contaminates the stable PROD catalog.
 
 ### DEV
 
-DEV has no persistent source-system state. Its candidate is fully validated inside the disposable integration catalog, then both schedules remain paused. The `deployment_active` tag records the last validated slot.
-
-### STAGING
-
-STAGING has its own workspace and `mro_staging` catalog. It behaves like production operationally: a candidate is validated in an isolated catalog and then promoted by schedule cutover. This makes staging the persistent rehearsal environment between `dev` and `main`.
+DEV has a single Bundle target, `dev`. It has no persistent source-system state and no blue-green promotion. The full source-to-semantic integration test runs inside a disposable catalog and the schedules remain paused afterward.
 
 ### PROD
 
-PROD has its own workspace and `mro_prod` catalog. Its normal operational source is persistent, but deployment smoke tests never mutate it: they use a disposable integration catalog instead. After successful validation, only the blue/green schedule ownership changes.
+PROD uses `prod_blue` and `prod_green`. Its `mro_prod` catalog is persistent, but deployment smoke tests never mutate it. After successful isolated validation, schedule ownership moves from the active slot to the validated candidate.
 
 ### Authentication and identities
 
@@ -1427,16 +1439,16 @@ DATABRICKS_CLIENT_ID=<environment deployment service principal>
 DATABRICKS_WAREHOUSE_ID=<environment SQL warehouse>
 ```
 
-Create GitHub Environments `dev`, `staging`, and `prod` with those variables. For PROD, `DATABRICKS_CLIENT_ID` is also passed as `run_as_service_principal`, so the deployed scheduled Jobs run under the production service principal.
+Create GitHub Environments `dev` and `prod` with those variables. For PROD, `DATABRICKS_CLIENT_ID` is also passed as `run_as_service_principal`, so the deployed scheduled Jobs run under the production service principal.
 
 No PAT or OAuth client secret is committed to the repository.
 
 ---
 
-<details>
-<summary><strong>Platform hardening: SCD2, MERGE, quality, observability, Genie, and process mining</strong></summary>
-
 </details>
+
+<details>
+<summary><strong>Platform hardening</strong></summary>
 
 # Platform hardening implemented
 
@@ -1498,12 +1510,10 @@ gold.process_transition_summary
 
 from the Bronze `entity_state_transition` log, including case IDs, event ordering, transition durations, case durations, current state, and transition-frequency summaries.
 
-
+</details>
 
 <details>
 <summary><strong>Setup, authentication, deployment, and local workflow</strong></summary>
-
-</details>
 
 # Prerequisites
 
@@ -1563,7 +1573,7 @@ From the repository root:
 
 ```bash
 databricks bundle validate \
-  -t dev_blue \
+  -t dev \
   -p <profile-name>
 ```
 
@@ -1571,7 +1581,7 @@ Useful inspection command:
 
 ```bash
 databricks bundle summary \
-  -t dev_blue \
+  -t dev \
   -p <profile-name>
 ```
 
@@ -1583,7 +1593,7 @@ Validation checks the bundle configuration before resources are deployed.
 
 ```bash
 databricks bundle deploy \
-  -t dev_blue \
+  -t dev \
   -p <profile-name>
 ```
 
@@ -1599,7 +1609,7 @@ Run the operational simulator independently:
 
 ```bash
 databricks bundle run \
-  -t dev_blue \
+  -t dev \
   -p <profile-name> \
   mro_source_simulator
 ```
@@ -1608,7 +1618,7 @@ Run the analytical pipeline independently:
 
 ```bash
 databricks bundle run \
-  -t dev_blue \
+  -t dev \
   -p <profile-name> \
   mro_analytics_pipeline
 ```
@@ -1617,7 +1627,7 @@ Accelerate one simulator invocation without changing the analytical schedule:
 
 ```bash
 databricks bundle run \
-  -t dev_blue \
+  -t dev \
   -p <profile-name> \
   --params ticks_per_run=24,step_minutes=60 \
   mro_source_simulator
@@ -1627,7 +1637,7 @@ Bootstrap only the operational source:
 
 ```bash
 databricks bundle run \
-  -t dev_blue \
+  -t dev \
   -p <profile-name> \
   --params bootstrap_only=true \
   mro_source_simulator
@@ -1667,23 +1677,23 @@ Useful checks:
 
 ```sql
 SELECT *
-FROM `mro-data`.mro_sim.sim_state;
+FROM `mro_dev`.mro_sim_dev_ephemeral.sim_state;
 ```
 
 ```sql
-SHOW TABLES IN `mro-data`.bronze_dev;
+SHOW TABLES IN `mro_dev`.bronze;
 ```
 
 ```sql
-SHOW TABLES IN `mro-data`.silver_dev;
+SHOW TABLES IN `mro_dev`.silver;
 ```
 
 ```sql
-SHOW TABLES IN `mro-data`.gold_dev;
+SHOW TABLES IN `mro_dev`.gold;
 ```
 
 ```sql
-SHOW VIEWS IN `mro-data`.semantic_dev;
+SHOW VIEWS IN `mro_dev`.semantic;
 ```
 
 A key acceptance test is **independent progress**:
@@ -1710,14 +1720,14 @@ graph LR
     I --> C[Commit]
 ```
 
-For GitHub-hosted CI/CD, `cd.yml` chooses the inactive blue/green target automatically. DEV runs should use explicit temporary schema overrides; PROD targets use the persistent schemas defined in the bundle. The checked-in workflow uses a Databricks service principal through GitHub OIDC workload identity federation.
+For GitHub-hosted CI/CD, DEV always deploys the single `dev` target and validates against a disposable catalog. PROD alone performs blue-green slot discovery and promotion. The checked-in workflow uses GitHub OIDC workload identity federation for Databricks authentication.
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Architectural trade-offs</strong></summary>
-
-</details>
 
 # Architectural trade-offs
 
@@ -1743,10 +1753,10 @@ Keeping them separate prevents a common failure mode where dimensional tables, a
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Example analytical questions</strong></summary>
-
-</details>
 
 # Example analytical questions
 
@@ -1791,10 +1801,10 @@ These cross-domain questions are the main reason the source simulator models cau
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Troubleshooting</strong></summary>
-
-</details>
 
 # Troubleshooting
 
@@ -1807,7 +1817,7 @@ The current code supports Unity Catalog names containing hyphens by quoting iden
 Use:
 
 ```sql
-`mro-data`.mro_sim.sim_state
+`mro_dev`.mro_sim_dev_ephemeral.sim_state
 ```
 
 not:
@@ -1842,7 +1852,7 @@ Check:
 Provide the Databricks CLI profile explicitly:
 
 ```bash
-databricks bundle validate -t dev_blue -p <profile-name>
+databricks bundle validate -t dev -p <profile-name>
 ```
 
 or configure a `workspace.host` / `workspace.profile` mapping for the target in `databricks.yml`.
@@ -1855,7 +1865,7 @@ Do not place secrets directly in the bundle YAML.
 
 # Current hardening status
 
-The formerly planned hardening items are now represented in the bundle: SCD2, incremental MERGE, expectations, row-count/freshness observability, schema-evolution tests, Genie publication, three isolated environments, production service-principal execution, isolated-catalog integration tests, and process-mining models.
+The formerly planned hardening items are now represented in the bundle: SCD2, incremental MERGE, expectations, row-count/freshness observability, schema-evolution tests, Genie publication, isolated DEV/PROD environments, production service-principal execution, isolated-catalog integration tests, and process-mining models.
 
 The remaining work is primarily **runtime validation in the real Databricks workspaces** and operational tuning of privileges, warehouse sizing, freshness thresholds, and retention policies.
 

@@ -30,4 +30,5 @@ def test_jobs_are_slot_addressable(repo_root: Path):
         job=load_job(repo_root,filename,key)
         assert '${var.deployment_environment}' in job['name']
         assert '${var.deployment_slot}' in job['name']
+        assert job['tags']['deployment_strategy']=='${var.deployment_strategy}'
         assert job['schedule']['pause_status']=='PAUSED'
