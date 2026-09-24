@@ -89,8 +89,7 @@ The source tree follows the same architectural boundaries as the platform:
 │   └── mro_genie.yml
 ├── scripts/
 │   └── cd/
-│       ├── blue_green.sh
-│       └── decommission_staging.sh
+│       └── blue_green.sh
 ├── tests/
 │   └── architecture/
 │       ├── conftest.py
@@ -163,7 +162,6 @@ There is no direct Job dependency between `operational` and `data_engineering`. 
 | `.github/workflows/ci.yml` | Credential-free Python, YAML, Bash, architectural, and schema-evolution validation. |
 | `.github/workflows/cd.yml` | DEV ephemeral validation plus PROD blue-green delivery with isolated catalog integration tests. |
 | `scripts/cd/blue_green.sh` | PROD-only blue-green discovery, cutover, and rollback helper. |
-| `scripts/cd/decommission_staging.sh` | One-time helper to pause legacy STAGING schedules left by older deployments. |
 | `tests/architecture/` | Executable architectural contracts for bundle structure, layer boundaries, Job DAGs, and semantic coverage. |
 | `requirements-ci.txt` | Minimal Python dependencies used by GitHub Actions. |
 ---
@@ -1428,18 +1426,6 @@ DEV has a single Bundle target, `dev`. It has no persistent source-system state 
 ### PROD
 
 PROD uses `prod_blue` and `prod_green`. Its `mro_prod` catalog is persistent, but deployment smoke tests never mutate it. After successful isolated validation, schedule ownership moves from the active slot to the validated candidate.
-
-### Legacy STAGING decommission
-
-Older revisions of this project supported a persistent STAGING environment. Removing STAGING from the current bundle does not automatically pause jobs that were already deployed in a former STAGING workspace.
-
-If this repository ever deployed STAGING, authenticate to that former workspace and run:
-
-```bash
-bash scripts/cd/decommission_staging.sh
-```
-
-The helper pauses the four legacy blue/green simulator and analytics schedules and marks them as decommissioned. After verifying those jobs are paused, the old GitHub `staging` Environment can be removed.
 
 ### Authentication and identities
 
