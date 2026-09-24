@@ -17,7 +17,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   context:
@@ -63,6 +62,9 @@ jobs:
 
   deploy:
     needs: [context, validate]
+    permissions:
+      contents: read
+      id-token: write
     if: needs.context.outputs.operation == 'deploy'
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.environment }}
@@ -151,6 +153,9 @@ jobs:
 
   rollback:
     needs: context
+    permissions:
+      contents: read
+      id-token: write
     if: needs.context.outputs.operation == 'rollback'
     runs-on: ubuntu-latest
     environment: ${{ needs.context.outputs.environment }}
