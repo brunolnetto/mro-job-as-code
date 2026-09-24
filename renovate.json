@@ -2,5 +2,61 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+
+  "baseBranchPatterns": [
+    "dev"
+  ],
+
+  "timezone": "America/Sao_Paulo",
+
+  "semanticCommits": "enabled",
+
+  "labels": [
+    "dependencies"
+  ],
+
+  "minimumReleaseAge": "3 days",
+
+  "prConcurrentLimit": 5,
+  "branchConcurrentLimit": 5,
+
+  "packageRules": [
+    {
+      "description": "Group Python CI dependency updates",
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "matchFileNames": [
+        "requirements-ci.txt"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "Python CI dependencies"
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Keep major updates isolated for manual review",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "labels": [
+        "dependencies",
+        "major-update"
+      ]
+    }
   ]
 }
