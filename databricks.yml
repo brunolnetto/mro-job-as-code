@@ -1,33 +1,30 @@
-bundle:
-  name: mro-data-platform
-
-include:
-  - resources/*.yml
-
-variables:
-  catalog:
-    description: Unity Catalog catalog
-    default: mro-data
-
-  source_schema:
-    default: mro_sim
-
-  bronze_schema:
-    default: bronze
-
-  silver_schema:
-    default: silver
-
-  gold_schema:
-    default: gold
-
-  semantic_schema:
-    default: semantic
-
 targets:
   dev:
     mode: development
     default: true
 
+    variables:
+      catalog: mro-data
+      source_schema: mro_sim_dev
+      bronze_schema: bronze_dev
+      silver_schema: silver_dev
+      gold_schema: gold_dev
+      semantic_schema: semantic_dev
+
   prod:
     mode: production
+
+    git:
+      branch: main
+
+    variables:
+      catalog: mro-data
+      source_schema: mro_sim
+      bronze_schema: bronze
+      silver_schema: silver
+      gold_schema: gold
+      semantic_schema: semantic
+
+    run_as:
+      service_principal_name: ${var.production_service_principal}
+
