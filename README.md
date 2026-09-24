@@ -166,10 +166,10 @@ There is no direct Job dependency between `operational` and `data_engineering`. 
 | `requirements-ci.txt` | Minimal Python dependencies used by GitHub Actions. |
 ---
 
+</details>
+
 <details>
 <summary><strong>Databricks catalog layout and layer ownership</strong></summary>
-
-</details>
 
 ## Databricks catalog layout
 
@@ -221,10 +221,10 @@ The diagram deliberately keeps node labels simple for broad Mermaid-renderer com
 
 ---
 
+</details>
+
 <details>
 <summary><strong>1. Operational source simulator</strong></summary>
-
-</details>
 
 # 1. Operational source simulator — `src/operational/01_simulate_mro.py`
 
@@ -355,7 +355,6 @@ The exception semantics are domain-specific:
 - purchase orders can be `CANCELLED`;
 - fiscal validation uses `BLOCKED → RELEASED` as its unhappy-but-resolved route and still has only the two terminal outcomes `POSTED` and `RELEASED`;
 - accounts-payable titles can be `VOIDED`.
-
 
 ### Work order
 
@@ -514,10 +513,10 @@ State-history views are also generated for versioned entities.
 
 ---
 
+</details>
+
 <details>
 <summary><strong>2. Bronze CDC ingestion</strong></summary>
-
-</details>
 
 # 2. Bronze ingestion — `src/data_engineering/02_bronze_ingest.py`
 
@@ -632,10 +631,10 @@ reconciliation_check_state
 Bronze remains the CDC ingestion boundary. Selected Silver and Gold models publish incrementally with Delta `MERGE`, while models that benefit from deterministic recomputation can remain rebuild-oriented.
 ---
 
+</details>
+
 <details>
 <summary><strong>3. Silver conformed layer</strong></summary>
-
-</details>
 
 # 3. Silver layer
 
@@ -773,10 +772,10 @@ Enrichment includes:
 
 ---
 
+</details>
+
 <details>
 <summary><strong>4. Gold dimensional model</strong></summary>
-
-</details>
 
 # 4. Gold dimensional model
 
@@ -870,10 +869,10 @@ Primary grains remain explicit: invoice, invoice item, payable title, and paymen
 
 ---
 
+</details>
+
 <details>
 <summary><strong>5. Semantic layer and fact-to-cube coverage</strong></summary>
-
-</details>
 
 # 5. Semantic layer — `src/analytics/07_semantic_model.py`
 
@@ -1122,10 +1121,10 @@ If a future use case genuinely requires measures from multiple fact grains in on
 Metric views require Unity Catalog and a Databricks runtime / SQL environment that supports metric views.
 ---
 
+</details>
+
 <details>
 <summary><strong>6. Quality gate</strong></summary>
-
-</details>
 
 # 6. Quality gate — `src/data_engineering/08_quality_gate.py`
 
@@ -1152,10 +1151,10 @@ This means a green Job run communicates more than "the notebooks executed". It a
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Independent Jobs and execution model</strong></summary>
-
-</details>
 
 # Independent Jobs
 
@@ -1246,27 +1245,43 @@ The analytical DAG begins at Bronze—not at the simulator:
 ```mermaid
 graph TD
     B[Bronze ingestion] --> M[Silver master]
+
     M --> SM[Silver MRO]
     M --> SS[Silver stock]
     M --> SP[Silver procurement]
     M --> SF[Silver finance]
     M --> D[Gold dimensions]
+
     SM --> FM[Gold MRO facts]
     D --> FM
+
     SS --> FS[Gold stock facts]
     D --> FS
+
     SP --> FP[Gold procurement facts]
     D --> FP
+
     SF --> FF[Gold finance facts]
     D --> FF
+
     FM --> SEM[Semantic metric views]
     FS --> SEM
     FP --> SEM
     FF --> SEM
-    B --> PM[Process mining]
-    SEM --> EXP[Expectations]
-    PM --> EXP
-    EXP --> OBS[Observability]
+
+    SM --> PM[Process mining]
+    SP --> PM
+    SF --> PM
+
+    FM --> EXP[Expectations]
+    FS --> EXP
+    FP --> EXP
+    FF --> EXP
+
+    SEM --> OBS[Observability]
+    PM --> OBS
+    EXP --> OBS
+
     OBS --> QG[Quality gate]
 ```
 
@@ -1318,10 +1333,10 @@ graph LR
 A failed analytical run therefore does not stop operational generation, and analytics never needs to know the simulator's logical tick.
 ---
 
+</details>
+
 <details>
 <summary><strong>Bundle targets and environment isolation</strong></summary>
-
-</details>
 
 # Bundle configuration — `databricks.yml`
 
@@ -1346,10 +1361,10 @@ so scheduled production Jobs execute as a service principal rather than a develo
 
 ---
 
+</details>
+
 <details>
 <summary><strong>CI/CD and blue-green delivery</strong></summary>
-
-</details>
 
 # CI/CD
 
@@ -1433,10 +1448,10 @@ No PAT or OAuth client secret is committed to the repository.
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Platform hardening: SCD2, MERGE, quality, observability, Genie, and process mining</strong></summary>
-
-</details>
 
 # Platform hardening implemented
 
@@ -1498,12 +1513,10 @@ gold.process_transition_summary
 
 from the Bronze `entity_state_transition` log, including case IDs, event ordering, transition durations, case durations, current state, and transition-frequency summaries.
 
-
+</details>
 
 <details>
 <summary><strong>Setup, authentication, deployment, and local workflow</strong></summary>
-
-</details>
 
 # Prerequisites
 
@@ -1714,10 +1727,10 @@ For GitHub-hosted CI/CD, `cd.yml` chooses the inactive blue/green target automat
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Architectural trade-offs</strong></summary>
-
-</details>
 
 # Architectural trade-offs
 
@@ -1743,10 +1756,10 @@ Keeping them separate prevents a common failure mode where dimensional tables, a
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Example analytical questions</strong></summary>
-
-</details>
 
 # Example analytical questions
 
@@ -1791,10 +1804,10 @@ These cross-domain questions are the main reason the source simulator models cau
 
 ---
 
+</details>
+
 <details>
 <summary><strong>Troubleshooting</strong></summary>
-
-</details>
 
 # Troubleshooting
 
