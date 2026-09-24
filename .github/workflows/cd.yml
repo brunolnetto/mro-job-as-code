@@ -213,6 +213,9 @@ jobs:
     if: needs.context.outputs.operation == 'rollback' && needs.context.outputs.environment == 'prod'
     runs-on: ubuntu-latest
     environment: prod
+    concurrency:
+      group: mro-cd-prod
+      cancel-in-progress: false
     env:
       DATABRICKS_AUTH_TYPE: github-oidc
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
