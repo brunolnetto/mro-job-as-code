@@ -60,6 +60,27 @@ def test_helper_has_dev_marker_and_runtime_promotion(repo_root: Path):
     runtime=text.split('promote_runtime()',1)[1].split('promote()',1)[0]
     assert 'unpause_slot' in runtime
 
+
+
+def test_helper_rejects_ambiguous_runtime_states(repo_root: Path):
+    text=(repo_root/'scripts/cd/blue_green.sh').read_text(encoding='utf-8')
+    runtime=text.split('discover_runtime()',1)[1].split('discover(){',1)[0]
+
+    assert 'INCONSISTENT' in runtime
+    assert 'Uncertain $env deployment markers while both schedules are paused' in runtime
+    assert 'UNPAUSED/PAUSED|UNPAUSED/MISSING' in runtime
+    assert 'PAUSED/UNPAUSED|MISSING/UNPAUSED' in runtime
+    assert 'ACTIVE/INACTIVE' in runtime
+    assert 'INACTIVE/ACTIVE' in runtime
+    assert 'INACTIVE/INACTIVE' in runtime
+
+    # Once both schedules are known PAUSED, a missing marker is uncertainty,
+    # not an inactive slot.
+    paused=runtime.split('PAUSED/PAUSED)',1)[1]
+    assert 'bm" == MISSING' in paused
+    assert 'gm" == MISSING' in paused
+    assert 'return 1' in paused
+
 def test_deprecated_deploy_workflows_absent(repo_root: Path):
     wf=repo_root/'.github/workflows'
     assert not (wf/'deploy-dev.yml').exists()
