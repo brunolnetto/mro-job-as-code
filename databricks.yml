@@ -9,9 +9,6 @@ include:
   - resources/*.yml
 
 variables:
-  workspace_host:
-    description: Workspace URL injected by the GitHub Environment for the selected deployment environment.
-    default: https://example.invalid
   warehouse_id:
     description: SQL warehouse used by Genie.
     default: 0000000000000000
@@ -43,7 +40,6 @@ targets:
     git:
       branch: dev
     workspace:
-      host: ${var.workspace_host}
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     presets:
       trigger_pause_status: PAUSED
@@ -62,7 +58,6 @@ targets:
     git:
       branch: dev
     workspace:
-      host: ${var.workspace_host}
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     presets:
       trigger_pause_status: PAUSED
@@ -81,7 +76,6 @@ targets:
     git:
       branch: staging
     workspace:
-      host: ${var.workspace_host}
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     presets:
       trigger_pause_status: PAUSED
@@ -100,7 +94,6 @@ targets:
     git:
       branch: staging
     workspace:
-      host: ${var.workspace_host}
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     presets:
       trigger_pause_status: PAUSED
@@ -119,7 +112,6 @@ targets:
     git:
       branch: main
     workspace:
-      host: ${var.workspace_host}
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     run_as:
       service_principal_name: ${var.run_as_service_principal}
@@ -140,7 +132,6 @@ targets:
     git:
       branch: main
     workspace:
-      host: ${var.workspace_host}
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     run_as:
       service_principal_name: ${var.run_as_service_principal}
