@@ -15,6 +15,27 @@ def test_ci_validates_python_tests_and_bundle(repo_root: Path):
     for target in ('dev_blue','dev_green','staging_blue','staging_green','prod_blue','prod_green'):
         assert target in text
 
+
+def test_ci_keeps_oidc_away_from_pull_request_code(repo_root: Path):
+    text=read(repo_root,'ci.yml')
+    workflow_permissions=text.split('jobs:',1)[0]
+    assert 'id-token: write' not in workflow_permissions
+
+    static=text.split('  static-validation:',1)[1].split('  bundle-validation:',1)[0]
+    assert 'id-token: write' not in static
+    assert 'environment: dev' not in static
+    assert 'DATABRICKS_HOST' not in static
+    assert 'DATABRICKS_CLIENT_ID' not in static
+    assert 'pytest -q tests/architecture' in static
+
+    authenticated=text.split('  bundle-validation:',1)[1]
+    assert "if: github.event_name == 'push'" in authenticated
+    assert 'environment: dev' in authenticated
+    assert 'id-token: write' in authenticated
+    assert 'DATABRICKS_AUTH_TYPE: github-oidc' in authenticated
+    assert 'pytest -q tests/architecture' not in authenticated
+    assert 'python -m compileall' not in authenticated
+
 def test_cd_routes_three_branches(repo_root: Path):
     text=read(repo_root,'cd.yml')
     for branch in ('dev','staging','main'):

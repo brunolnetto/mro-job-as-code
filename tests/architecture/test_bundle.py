@@ -22,7 +22,9 @@ def test_bundle_has_six_blue_green_targets(repo_root: Path):
             assert t['variables']['deployment_slot']==slot
             assert t['variables']['catalog']==catalogs[env]
             assert t['presets']['trigger_pause_status']=='PAUSED'
-            assert t['workspace']['host']=='${var.workspace_host}'
+            assert 'host' not in t['workspace']
+            assert t['workspace']['root_path']=='/Workspace/Shared/.bundle/${bundle.name}/${bundle.target}'
+    assert 'workspace_host' not in bundle['variables']
     assert len(set(catalogs.values()))==3
 
 def test_prod_runs_as_service_principal(repo_root: Path):
