@@ -162,6 +162,7 @@ There is no direct Job dependency between `operational` and `data_engineering`. 
 | `.github/workflows/ci.yml` | Credential-free Python, YAML, Bash, architectural, and schema-evolution validation. |
 | `.github/workflows/cd.yml` | DEV ephemeral validation plus PROD blue-green delivery with isolated catalog integration tests. |
 | `scripts/cd/blue_green.sh` | PROD-only blue-green discovery, cutover, and rollback helper. |
+| `scripts/cd/decommission_staging.sh` | One-time helper to pause legacy STAGING schedules left by older deployments. |
 | `tests/architecture/` | Executable architectural contracts for bundle structure, layer boundaries, Job DAGs, and semantic coverage. |
 | `requirements-ci.txt` | Minimal Python dependencies used by GitHub Actions. |
 ---
@@ -173,20 +174,19 @@ There is no direct Job dependency between `operational` and `data_engineering`. 
 
 ## Databricks catalog layout
 
-The default catalog is:
+The default DEV catalog is:
 
 ```text
-mro-data
+mro_dev
 ```
 
-Because the catalog contains a hyphen, SQL references must quote it with backticks:
+Production uses:
 
-```sql
-SELECT *
-FROM `mro-data`.gold.fact_work_order;
+```text
+mro_prod
 ```
 
-The notebooks already centralize identifier quoting, so the hyphenated catalog name is supported.
+The bundle passes the environment-specific catalog explicitly to the notebooks. Identifiers are quoted centrally, so custom Unity Catalog names remain safe to reference.
 
 The project creates or uses six schemas:
 
@@ -1219,7 +1219,7 @@ because the simulator is a single logical writer advancing one persisted simulat
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `catalog` | `mro-data` | Unity Catalog catalog. |
+| `catalog` | `mro_dev` | DEV Unity Catalog catalog; PROD overrides this with `mro_prod`. |
 | `schema` | `mro_sim` | Operational source schema; populated from bundle variable `source_schema`. |
 | `start` | `2026-01-01T08:00:00-03:00` | Initial simulation timestamp. |
 | `step_minutes` | `60` | Simulated minutes per tick. |
@@ -1283,7 +1283,7 @@ At each invocation Bronze advances independent per-table Delta commit checkpoint
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `catalog` | `mro-data` | Unity Catalog catalog containing all project schemas. |
+| `catalog` | `mro_dev` | DEV Unity Catalog catalog; PROD overrides this with `mro_prod`. |
 | `source_schema` | `mro_sim` | Operational source schema. |
 | `bronze_schema` | `bronze` | Incremental ingestion schema. |
 | `silver_schema` | `silver` | Normalized/enriched domain schema. |
@@ -1427,6 +1427,18 @@ DEV has a single Bundle target, `dev`. It has no persistent source-system state 
 ### PROD
 
 PROD uses `prod_blue` and `prod_green`. Its `mro_prod` catalog is persistent, but deployment smoke tests never mutate it. After successful isolated validation, schedule ownership moves from the active slot to the validated candidate.
+
+### Legacy STAGING decommission
+
+Older revisions of this project supported a persistent STAGING environment. Removing STAGING from the current bundle does not automatically pause jobs that were already deployed in a former STAGING workspace.
+
+If this repository ever deployed STAGING, authenticate to that former workspace and run:
+
+```bash
+bash scripts/cd/decommission_staging.sh
+```
+
+The helper pauses the four legacy blue/green simulator and analytics schedules and marks them as decommissioned. After verifying those jobs are paused, the old GitHub `staging` Environment can be removed.
 
 ### Authentication and identities
 
@@ -1808,22 +1820,17 @@ These cross-domain questions are the main reason the source simulator models cau
 
 # Troubleshooting
 
-## `Invalid catalog identifier: 'mro-data'`
+## Invalid catalog identifier
 
 Older revisions of the simulator used an overly strict identifier validator.
 
-The current code supports Unity Catalog names containing hyphens by quoting identifiers with backticks.
+The current DEV configuration uses `mro_dev`. If you choose a custom catalog name, the notebooks quote identifiers with backticks.
 
-Use:
-
-```sql
-`mro_dev`.mro_sim_dev_ephemeral.sim_state
-```
-
-not:
+Example:
 
 ```sql
-mro-data.mro_sim.sim_state
+SELECT *
+FROM `mro_dev`.mro_sim_dev_ephemeral.sim_state;
 ```
 
 ## `Compute ... does not exist`
