@@ -6,7 +6,7 @@ EXPECTED_JOBS={"mro_source_simulator","mro_analytics_pipeline"}
 def load_yaml(path: Path):
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-def test_bundle_has_dev_and_prod_blue_green_targets(repo_root: Path):
+def test_bundle_has_single_dev_and_prod_blue_green_targets(repo_root: Path):
     bundle=load_yaml(repo_root/'databricks.yml')
     targets=bundle['targets']
 
