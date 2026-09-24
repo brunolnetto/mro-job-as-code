@@ -88,13 +88,11 @@ jobs:
       - name: Validate candidate bundle
         run: >-
           databricks bundle validate -t '${{ steps.slots.outputs.target }}'
-          --var="workspace_host=$DATABRICKS_HOST"
           --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"
           --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"
       - name: Deploy inactive slot paused
         run: >-
           databricks bundle deploy -t '${{ steps.slots.outputs.target }}'
-          --var="workspace_host=$DATABRICKS_HOST"
           --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"
           --var="run_as_service_principal=$DATABRICKS_CLIENT_ID"
           --auto-approve --fail-on-active-runs
@@ -112,13 +110,13 @@ jobs:
         run: |
           target='${{ steps.slots.outputs.target }}'
           c='${{ steps.integration.outputs.catalog }}'
-          databricks bundle run -t "$target" --var="workspace_host=$DATABRICKS_HOST" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,schema=mro_sim,bootstrap_only=true" mro_source_simulator
-          databricks bundle run -t "$target" --var="workspace_host=$DATABRICKS_HOST" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,schema=mro_sim,ticks_per_run=2,step_minutes=60" mro_source_simulator
+          databricks bundle run -t "$target" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,schema=mro_sim,bootstrap_only=true" mro_source_simulator
+          databricks bundle run -t "$target" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,schema=mro_sim,ticks_per_run=2,step_minutes=60" mro_source_simulator
       - name: Run isolated analytics integration test
         run: |
           target='${{ steps.slots.outputs.target }}'
           c='${{ steps.integration.outputs.catalog }}'
-          databricks bundle run -t "$target" --var="workspace_host=$DATABRICKS_HOST" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,source_schema=mro_sim,bronze_schema=bronze,silver_schema=silver,gold_schema=gold,semantic_schema=semantic,ops_schema=ops,source_stability_lag_minutes=0,reconciliation_failure_threshold=1" mro_analytics_pipeline
+          databricks bundle run -t "$target" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID" --var="run_as_service_principal=$DATABRICKS_CLIENT_ID" --params "catalog=$c,source_schema=mro_sim,bronze_schema=bronze,silver_schema=silver,gold_schema=gold,semantic_schema=semantic,ops_schema=ops,source_stability_lag_minutes=0,reconciliation_failure_threshold=1" mro_analytics_pipeline
       - name: Drop isolated integration catalog
         if: always() && steps.integration.outputs.catalog != ''
         run: databricks catalogs delete '${{ steps.integration.outputs.catalog }}' --force
