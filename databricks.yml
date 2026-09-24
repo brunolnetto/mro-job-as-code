@@ -1,23 +1,85 @@
+bundle:
+  name: mro-data-platform
+
+  deployment:
+    lock:
+      enabled: true
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog
+    default: mro-data
+
+  deployment_environment:
+    description: Logical deployment environment (dev or prod)
+    default: dev
+
+  deployment_slot:
+    description: Blue/green deployment slot
+    default: blue
+
+  source_schema:
+    description: Runtime operational source schema
+    default: mro_sim_dev_ephemeral
+
+  bronze_schema:
+    description: Runtime Bronze CDC landing schema
+    default: bronze_dev_ephemeral
+
+  silver_schema:
+    description: Runtime Silver conformed schema
+    default: silver_dev_ephemeral
+
+  gold_schema:
+    description: Runtime Gold dimensional schema
+    default: gold_dev_ephemeral
+
+  semantic_schema:
+    description: Runtime semantic metric-view schema
+    default: semantic_dev_ephemeral
+
 targets:
-  dev:
-    mode: development
-    default: true
-
+  dev_blue:
+    git:
+      branch: dev
+    presets:
+      trigger_pause_status: PAUSED
     variables:
+      deployment_environment: dev
+      deployment_slot: blue
       catalog: mro-data
-      source_schema: mro_sim_dev
-      bronze_schema: bronze_dev
-      silver_schema: silver_dev
-      gold_schema: gold_dev
-      semantic_schema: semantic_dev
+      source_schema: mro_sim_dev_ephemeral
+      bronze_schema: bronze_dev_ephemeral
+      silver_schema: silver_dev_ephemeral
+      gold_schema: gold_dev_ephemeral
+      semantic_schema: semantic_dev_ephemeral
 
-  prod:
-    mode: production
+  dev_green:
+    git:
+      branch: dev
+    presets:
+      trigger_pause_status: PAUSED
+    variables:
+      deployment_environment: dev
+      deployment_slot: green
+      catalog: mro-data
+      source_schema: mro_sim_dev_ephemeral
+      bronze_schema: bronze_dev_ephemeral
+      silver_schema: silver_dev_ephemeral
+      gold_schema: gold_dev_ephemeral
+      semantic_schema: semantic_dev_ephemeral
 
+  prod_blue:
     git:
       branch: main
-
+    presets:
+      trigger_pause_status: PAUSED
     variables:
+      deployment_environment: prod
+      deployment_slot: blue
       catalog: mro-data
       source_schema: mro_sim
       bronze_schema: bronze
@@ -25,6 +87,17 @@ targets:
       gold_schema: gold
       semantic_schema: semantic
 
-    run_as:
-      service_principal_name: ${var.production_service_principal}
-
+  prod_green:
+    git:
+      branch: main
+    presets:
+      trigger_pause_status: PAUSED
+    variables:
+      deployment_environment: prod
+      deployment_slot: green
+      catalog: mro-data
+      source_schema: mro_sim
+      bronze_schema: bronze
+      silver_schema: silver
+      gold_schema: gold
+      semantic_schema: semantic
